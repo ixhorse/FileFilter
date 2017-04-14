@@ -1,0 +1,45 @@
+;
+; FileFilter.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=%ClassName%
+ClassGuid={4FE1C555-DC3C-498A-BE47-A1EDCB0BB756}
+Provider="Chen Filter Software"
+CatalogFile=a.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+
+[DefaultInstall.ntx86]
+CopyFiles=DriverCopyFiles,FiltJectCopyFiles
+AddReg = Filter.AddReg
+
+[Filter.AddReg]
+HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}","LowerFilters",FileFilter
+
+[DriverCopyFiles]
+FileFilter.sys,,,0x60		; replace newer, suppress dialog
+
+[DefaultInstall.ntx86.services]
+AddService=FileFilter,,FilterService
+
+[FilterService]
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%10%\system32\drivers\FileFilter.sys
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+FileFilter.sys=1
+
+
+[Strings]
+ManufacturerName="Chen Co."
+ClassName="MyClass"
+DiskName="FileFilter Source Disk"
