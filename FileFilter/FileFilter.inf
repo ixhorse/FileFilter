@@ -18,7 +18,7 @@ CopyFiles=DriverCopyFiles,FiltJectCopyFiles
 AddReg = Filter.AddReg
 
 [Filter.AddReg]
-HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}","LowerFilters",FileFilter
+HKLM,"SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}","LowerFilters",0x00010000,"FileFilter"
 
 [DriverCopyFiles]
 FileFilter.sys,,,0x60		; replace newer, suppress dialog
