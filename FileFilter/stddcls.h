@@ -25,6 +25,10 @@ extern "C" {
 
 #include <stdio.h>
 
+#include <usbioctl.h>
+
+#include <usb.h>
+
 
 
 #ifdef __cplusplus

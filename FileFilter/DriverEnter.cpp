@@ -179,7 +179,7 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {							// DispatchAny
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
-#if DBG
+
 	static char* irpname[] =
 	{
 		"IRP_MJ_CREATE",
@@ -212,21 +212,29 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		"IRP_MJ_PNP",
 	};
 
-	UCHAR type = stack->MajorFunction;
+	/*UCHAR type = stack->MajorFunction;
 	if (type >= arraysize(irpname))
 	 	KdPrint((DRIVERNAME " - Unknown IRP, major type %X\n", type));
 	else
 	 	KdPrint((DRIVERNAME " - %s\n", irpname[type]));
-	
+	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
+		KdPrint(("Submit urb.\n"));*/
+
 	/*static UNICODE_STRING driver_name = pdx->LowerDeviceObject->DriverObject->DriverName;
 	KdPrint((DRIVERNAME " -Driver: %wZ.\n", &driver_name));*/
 
 	/*if (stack->DeviceObject == fido)
 		KdPrint(("stack->DeviceObject == fido.\n"));*/
 
-#endif
-
 	// Pass request down without additional processing
+
+
+	PURB urb = (PURB) stack->Parameters.Others.Argument1;
+	if (urb != NULL)
+	{
+		KdPrint(("Urb function: %d\n", urb->UrbGetFrameLength));
+	}
+
 	NTSTATUS status;
 	status = IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	if (!NT_SUCCESS(status))
