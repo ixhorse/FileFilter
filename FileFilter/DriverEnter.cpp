@@ -48,42 +48,53 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo)
 	NTSTATUS status;
 
 	PDEVICE_OBJECT fido;
-	status = IoCreateDevice(DriverObject, sizeof(DEVICE_EXTENSION), NULL,
-		GetDeviceTypeToUse(pdo), 0, FALSE, &fido);
-	if (!NT_SUCCESS(status))
-	{						// can't create device object
-		KdPrint((DRIVERNAME " - IoCreateDevice failed - %X\n", status));
-		return status;
-	}						// can't create device object
-	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	static UNICODE_STRING pdo_name = pdo->DriverObject->DriverName;
+	UNICODE_STRING target_driver;
+	RtlInitUnicodeString(&target_driver, TARGETDRIVER);
+	KdPrint(("Attached to driver: %wZ\n", &pdo_name));
+	KdPrint(("Attached to driver: %wZ\n", &target_driver));
 
-	do
-	{						// finish initialization
-		IoInitializeRemoveLock(&pdx->RemoveLock, 0, 0, 0);
-		pdx->DeviceObject = fido;
-		pdx->Pdo = pdo;
-		//将过滤驱动附加在底层驱动之上
-		PDEVICE_OBJECT fdo = IoAttachDeviceToDeviceStack(fido, pdo);
-		if (!fdo)
-		{					// can't attach								 
-			KdPrint((DRIVERNAME " - IoAttachDeviceToDeviceStack failed\n"));
-			status = STATUS_DEVICE_REMOVED;
-			break;
-		}					// can't attach
-							//记录底层驱动
-		pdx->LowerDeviceObject = fdo;
-		//由于不知道底层驱动是直接IO还是BufferIO，因此将标志都置上
-		fido->Flags |= fdo->Flags & (DO_DIRECT_IO | DO_BUFFERED_IO | DO_POWER_PAGABLE);
-		// Clear the "initializing" flag so that we can get IRPs
-		fido->Flags &= ~DO_DEVICE_INITIALIZING;
-	} while (FALSE);					// finish initialization
+	if (RtlEqualUnicodeString(&target_driver, &pdo_name, TRUE))
+	{
+		status = IoCreateDevice(DriverObject, sizeof(DEVICE_EXTENSION), NULL,
+			GetDeviceTypeToUse(pdo), 0, FALSE, &fido);
+		if (!NT_SUCCESS(status))
+		{						// can't create device object
+			KdPrint((DRIVERNAME " - IoCreateDevice failed - %X\n", status));
+			return status;
+		}						// can't create device object
+		PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 
-	if (!NT_SUCCESS(status))
-	{					// need to cleanup
-		if (pdx->LowerDeviceObject)
-			IoDetachDevice(pdx->LowerDeviceObject);
-		IoDeleteDevice(fido);
-	}					// need to cleanup
+		do
+		{						// finish initialization
+			IoInitializeRemoveLock(&pdx->RemoveLock, 0, 0, 0);
+			pdx->DeviceObject = fido;
+			pdx->Pdo = pdo;
+			//将过滤驱动附加在底层驱动之上
+			PDEVICE_OBJECT fdo = IoAttachDeviceToDeviceStack(fido, pdo);
+			if (!fdo)
+			{					// can't attach								 
+				KdPrint((DRIVERNAME " - IoAttachDeviceToDeviceStack failed\n"));
+				status = STATUS_DEVICE_REMOVED;
+				break;
+			}					// can't attach
+								//记录底层驱动
+			pdx->LowerDeviceObject = fdo;
+			//由于不知道底层驱动是直接IO还是BufferIO，因此将标志都置上
+			fido->Flags |= fdo->Flags & (DO_DIRECT_IO | DO_BUFFERED_IO | DO_POWER_PAGABLE);
+			// Clear the "initializing" flag so that we can get IRPs
+			fido->Flags &= ~DO_DEVICE_INITIALIZING;
+		} while (FALSE);					// finish initialization
+
+		if (!NT_SUCCESS(status))
+		{					// need to cleanup
+			if (pdx->LowerDeviceObject)
+				IoDetachDevice(pdx->LowerDeviceObject);
+			IoDeleteDevice(fido);
+		}					// need to cleanup
+	}
+	else
+		KdPrint(("Not equal.\n"));
 
 	return status;
 }							// AddDevice
@@ -201,11 +212,11 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		"IRP_MJ_PNP",
 	};
 
-	/*UCHAR type = stack->MajorFunction;
+	UCHAR type = stack->MajorFunction;
 	if (type >= arraysize(irpname))
 	 	KdPrint((DRIVERNAME " - Unknown IRP, major type %X\n", type));
 	else
-	 	KdPrint((DRIVERNAME " - %s\n", irpname[type]));*/
+	 	KdPrint((DRIVERNAME " - %s\n", irpname[type]));
 	
 	/*static UNICODE_STRING driver_name = pdx->LowerDeviceObject->DriverObject->DriverName;
 	KdPrint((DRIVERNAME " -Driver: %wZ.\n", &driver_name));*/
@@ -302,7 +313,6 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	status = IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	if (!NT_SUCCESS(status))
 		return CompleteRequest(Irp, status, 0);
-#if DBG 
 	static char* pnpname[] =
 	{
 		"IRP_MN_START_DEVICE",
@@ -336,7 +346,6 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		KdPrint((DRIVERNAME " - IRP_MJ_PNP (%s)\n", pnpname[fcn]));
 	else
 		KdPrint((DRIVERNAME " - IRP_MJ_PNP (%2.2X)\n", fcn));
-#endif // DBG
 
 	// Handle usage notification specially in order to track power pageable
 	// flag correctly. We need to avoid allowing a non-pageable handler to be
