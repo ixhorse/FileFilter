@@ -14,6 +14,15 @@ ULONG GetDeviceTypeToUse(PDEVICE_OBJECT pdo);
 NTSTATUS StartDeviceCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 NTSTATUS UsageNotificationCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 
+
+HANDLE file_handle = NULL;
+NTSTATUS  status;
+OBJECT_ATTRIBUTES object_attributes;
+IO_STATUS_BLOCK io_status;
+LARGE_INTEGER offset = { 0 };
+UNICODE_STRING file_name = RTL_CONSTANT_STRING(L"\\??\\C:\\a.txt");
+USHORT buf[10] = { 0 };
+
 ///////////////////////////////////////////////////////////////////////////////
 #pragma INITCODE 
 extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
@@ -29,6 +38,27 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 	DriverObject->MajorFunction[IRP_MJ_PNP] = DispatchPnp;
 	DriverObject->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = DispatchInternalDeviceControl;
 	//DriverObject->MajorFunction[IRP_MJ_SCSI] = DispatchForSCSI;
+
+
+
+	InitializeObjectAttributes(
+		&object_attributes,
+		&file_name,
+		OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+		NULL,
+		NULL);
+	status = ZwCreateFile(
+		&file_handle,
+		GENERIC_READ | GENERIC_WRITE,
+		&object_attributes,
+		&io_status,
+		NULL,
+		FILE_ATTRIBUTE_NORMAL,
+		FILE_SHARE_READ,
+		FILE_OPEN_IF,
+		FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT,
+		NULL,
+		0);
 	return STATUS_SUCCESS;
 }							// DriverEntry
 
@@ -176,14 +206,71 @@ NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 }
 ///////////////////////////////////////////////////////////////////////////////
 
+NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp,
+	IN PVOID Context)
+{
+	NTSTATUS status;
+	UCHAR *pbuf;
+	ULONG len;
+	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+	PURB urb = (PURB)stack->Parameters.Others.Argument1;
+	if (urb != NULL)
+	{
+		switch (urb->UrbHeader.Function)
+		{
+		case URB_FUNCTION_CONTROL_TRANSFER:
+			//0x8 对应0x28
+			if (urb->UrbControlDescriptorRequest.DescriptorType == 0x22)
+			{
+				//KdPrint(("get descriptor.\n"));
+				pbuf = (UCHAR *)urb->UrbControlDescriptorRequest.TransferBuffer;
+				len = urb->UrbControlDescriptorRequest.TransferBufferLength;
+				//KdPrint(("Descriptor len: %d\n", len));
+			}
+			break;
+		case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
+			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
+			{
+				//KdPrint(("BULK OR INTERRUPT TRANSFER read success.IRP: %x.\n", Irp));
+				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
+				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+				//KdPrint(("Bulk or interrupt transfer len: %d.\n", len));
+			}
+			break;
+		default:
+			break;
+		}
+	}
+	
+	if (Irp->PendingReturned) {
+
+		IoMarkIrpPending(Irp);
+	}
+	return Irp->IoStatus.Status;
+}
+
 #pragma LOCKEDCODE
 NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {
+	KdPrint(("Enter Inernal Device control. IRP: %x.\n", Irp));
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB) stack->Parameters.Others.Argument1;
-	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
+	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB
+		&& urb != NULL)
 	{
+		buf[0] = urb->UrbHeader.Function;
+		buf[9] = '\n';
+		status = ZwWriteFile(
+			file_handle, NULL, NULL, NULL,
+			&io_status,
+			buf, 10, &offset,
+			NULL
+		);
+		offset.QuadPart += 10;
+
+
 		switch (urb->UrbHeader.Function)
 		{
 		case URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE:
@@ -191,7 +278,14 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			if (urb->UrbControlDescriptorRequest.DescriptorType == 0x22)
 			{
 				//完成函数
-				;
+				IoCopyCurrentIrpStackLocationToNext(Irp);
+				IoSetCompletionRoutine(Irp,
+					InternalCompletion,
+					NULL,
+					TRUE,
+					TRUE,
+					TRUE);
+				return IoCallDriver(pdx->LowerDeviceObject, Irp);
 			}
 			break;
 		case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
@@ -199,12 +293,20 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			//最低位为传输方向
 			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
 			{
-				KdPrint(("Input.\n"));
+				//KdPrint(("Input. IRP: %x.\n", Irp));
 				//完成函数
+				IoCopyCurrentIrpStackLocationToNext(Irp);
+				IoSetCompletionRoutine(Irp,
+					InternalCompletion,
+					NULL,
+					TRUE,
+					TRUE,
+					TRUE);
+				return IoCallDriver(pdx->LowerDeviceObject, Irp);
 			}
 			else
 			{
-				KdPrint(("Output.\n"));
+				//KdPrint(("Output.\n"));
 				//get buf
 				UCHAR *pbuf;
 				ULONG len;
@@ -217,6 +319,8 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			break;
 		}
 	}
+	IoSkipCurrentIrpStackLocation(Irp);
+	return IoCallDriver(pdx->LowerDeviceObject, Irp);
 }
 
 

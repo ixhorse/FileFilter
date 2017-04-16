@@ -52,5 +52,6 @@ NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 
 NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 
+//NTSTATUS InternalCompletion(IN PIRP Irp);
 #endif // DRIVER_H
 
