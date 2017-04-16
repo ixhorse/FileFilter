@@ -27,6 +27,7 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 		DriverObject->MajorFunction[i] = DispatchAny;
 	DriverObject->MajorFunction[IRP_MJ_POWER] = DispatchPower;
 	DriverObject->MajorFunction[IRP_MJ_PNP] = DispatchPnp;
+	DriverObject->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = DispatchInternalDeviceControl;
 	//DriverObject->MajorFunction[IRP_MJ_SCSI] = DispatchForSCSI;
 	return STATUS_SUCCESS;
 }							// DriverEntry
@@ -174,6 +175,51 @@ NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	return status;
 }
 ///////////////////////////////////////////////////////////////////////////////
+
+#pragma LOCKEDCODE
+NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
+{
+	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+	PURB urb = (PURB) stack->Parameters.Others.Argument1;
+	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
+	{
+		switch (urb->UrbHeader.Function)
+		{
+		case URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE:
+			//0x28
+			if (urb->UrbControlDescriptorRequest.DescriptorType == 0x22)
+			{
+				//完成函数
+				;
+			}
+			break;
+		case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
+			//0x9
+			//最低位为传输方向
+			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
+			{
+				KdPrint(("Input.\n"));
+				//完成函数
+			}
+			else
+			{
+				KdPrint(("Output.\n"));
+				//get buf
+				UCHAR *pbuf;
+				ULONG len;
+
+				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
+				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+
 #pragma LOCKEDCODE				// make no assumptions about pageability of dispatch fcns
 NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {							// DispatchAny
@@ -212,11 +258,13 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		"IRP_MJ_PNP",
 	};
 
-	/*UCHAR type = stack->MajorFunction;
+	UCHAR type = stack->MajorFunction;
 	if (type >= arraysize(irpname))
 	 	KdPrint((DRIVERNAME " - Unknown IRP, major type %X\n", type));
 	else
 	 	KdPrint((DRIVERNAME " - %s\n", irpname[type]));
+
+	/*
 	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
 		KdPrint(("Submit urb.\n"));*/
 
@@ -228,11 +276,13 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 
 	// Pass request down without additional processing
 
-
-	PURB urb = (PURB) stack->Parameters.Others.Argument1;
-	if (urb != NULL)
+	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
 	{
-		KdPrint(("Urb function: %d\n", urb->UrbGetFrameLength));
+		PURB urb = (PURB)stack->Parameters.Others.Argument1;
+		if (urb != NULL)
+		{
+			KdPrint(("Urb function: %x\n", urb->UrbHeader.Function));
+		}
 	}
 
 	NTSTATUS status;
@@ -243,10 +293,10 @@ NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	status = IoCallDriver(pdx->LowerDeviceObject, Irp);
 	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
 	return status;
-}							// DispatchAny
+}// DispatchAny
 
 
-							///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 NTSTATUS DispatchPower(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {							// DispatchPower
 #if DBG
