@@ -22,6 +22,8 @@ IO_STATUS_BLOCK io_status;
 LARGE_INTEGER offset = { 0 };
 UNICODE_STRING file_name = RTL_CONSTANT_STRING(L"\\??\\C:\\a.txt");
 USHORT buf[10] = { 0 };
+ULONG func_code[100] = { 0 };
+ULONG i = 0;
 
 ///////////////////////////////////////////////////////////////////////////////
 #pragma INITCODE 
@@ -40,25 +42,27 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 	//DriverObject->MajorFunction[IRP_MJ_SCSI] = DispatchForSCSI;
 
 
-
-	InitializeObjectAttributes(
-		&object_attributes,
-		&file_name,
-		OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
-		NULL,
-		NULL);
-	status = ZwCreateFile(
-		&file_handle,
-		GENERIC_READ | GENERIC_WRITE,
-		&object_attributes,
-		&io_status,
-		NULL,
-		FILE_ATTRIBUTE_NORMAL,
-		FILE_SHARE_READ,
-		FILE_OPEN_IF,
-		FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT,
-		NULL,
-		0);
+	if (file_handle == NULL)
+	{
+		InitializeObjectAttributes(
+			&object_attributes,
+			&file_name,
+			OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+			NULL,
+			NULL);
+		status = ZwCreateFile(
+			&file_handle,
+			FILE_APPEND_DATA,
+			&object_attributes,
+			&io_status,
+			NULL,
+			FILE_ATTRIBUTE_NORMAL,
+			FILE_SHARE_READ,
+			FILE_OPEN_IF,
+			FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT,
+			NULL,
+			0);
+	}
 	return STATUS_SUCCESS;
 }							// DriverEntry
 
@@ -260,16 +264,33 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB
 		&& urb != NULL)
 	{
-		buf[0] = urb->UrbHeader.Function;
+		/*buf[0] = urb->UrbHeader.Function;
 		buf[9] = '\n';
 		status = ZwWriteFile(
 			file_handle, NULL, NULL, NULL,
 			&io_status,
-			buf, 10, &offset,
+			buf, 10, NULL,
 			NULL
 		);
 		offset.QuadPart += 10;
+		if (!NT_SUCCESS(status))
+			KdPrint(("Write file failed. %x.\n", status));
+		status = STATUS_SUCCESS;*/
+		
+		if (i < 100)
+		{
+			func_code[i] = urb->UrbHeader.Function;
+			i++;
+		}
+		if (i == 100)
+			for (i = 0; i < 100; i++)
+			{
+				KdPrint(("%x ", func_code[i]));
+				if (i % 10 == 9)
+					KdPrint(("\n"));
 
+			}
+		KdPrint(("\n"));
 
 		switch (urb->UrbHeader.Function)
 		{
