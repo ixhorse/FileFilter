@@ -13,6 +13,7 @@ NTSTATUS DispatchWmi(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 ULONG GetDeviceTypeToUse(PDEVICE_OBJECT pdo);
 NTSTATUS StartDeviceCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 NTSTATUS UsageNotificationCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
+ULONG GetDevSeq(IN PDEVICE_OBJECT pdo);
 
 
 HANDLE file_handle = NULL;
@@ -22,8 +23,11 @@ IO_STATUS_BLOCK io_status;
 LARGE_INTEGER offset = { 0 };
 UNICODE_STRING file_name = RTL_CONSTANT_STRING(L"\\??\\C:\\a.txt");
 USHORT buf[10] = { 0 };
-ULONG func_code[100] = { 0 };
-ULONG i = 0;
+ULONG func_code[10][100][2];
+ULONG func_num[10] = { 0 };
+ULONG j = 0;
+PDEVICE_OBJECT lowerDev[10];
+ULONG lowerDev_num = 0;
 
 ///////////////////////////////////////////////////////////////////////////////
 #pragma INITCODE 
@@ -86,11 +90,18 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo)
 	static UNICODE_STRING pdo_name = pdo->DriverObject->DriverName;
 	UNICODE_STRING target_driver;
 	RtlInitUnicodeString(&target_driver, TARGETDRIVER);
-	KdPrint(("Attached to driver: %wZ\n", &pdo_name));
-	KdPrint(("Attached to driver: %wZ\n", &target_driver));
+	//KdPrint(("Attached to driver: %wZ\n", &pdo_name));
+	//KdPrint(("Attached to driver: %wZ\n", &target_driver));
 
 	if (RtlEqualUnicodeString(&target_driver, &pdo_name, TRUE))
 	{
+		ULONG j, k;
+		lowerDev[lowerDev_num] = pdo;
+		for (j = 0; j < 100; j++)
+			for (k = 0; k < 2; k++)
+				func_code[lowerDev_num][j][k] = -1;
+		lowerDev_num++;
+
 		status = IoCreateDevice(DriverObject, sizeof(DEVICE_EXTENSION), NULL,
 			GetDeviceTypeToUse(pdo), 0, FALSE, &fido);
 		if (!NT_SUCCESS(status))
@@ -219,8 +230,24 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 	ULONG len;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB)stack->Parameters.Others.Argument1;
+	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
 	if (urb != NULL)
 	{
+		ULONG devSeq = GetDevSeq(pdx->Pdo);
+		if (func_num[devSeq] < 100)
+		{
+			func_code[devSeq][func_num[devSeq]][1] = urb->UrbHeader.Function;
+			func_num[devSeq]++;
+		}
+		/*if (i == 100)
+			for (i = 0; i < 100; i++)
+			{
+				KdPrint(("%x|%x ", func_code[i][0], func_code[i][1]));
+				if (i % 10 == 9)
+					KdPrint(("\n"));
+			}
+		i = 100;*/
+
 		switch (urb->UrbHeader.Function)
 		{
 		case URB_FUNCTION_CONTROL_TRANSFER:
@@ -276,21 +303,18 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		if (!NT_SUCCESS(status))
 			KdPrint(("Write file failed. %x.\n", status));
 		status = STATUS_SUCCESS;*/
-		
-		if (i < 100)
+		ULONG devSeq = GetDevSeq(pdx->Pdo);
+		ULONG j;
+		/*if (func_num[devSeq] < 100)
 		{
-			func_code[i] = urb->UrbHeader.Function;
-			i++;
+			func_code[devSeq][func_num[devSeq]][0] = urb->UrbHeader.Function;
 		}
-		if (i == 100)
-			for (i = 0; i < 100; i++)
-			{
-				KdPrint(("%x ", func_code[i]));
-				if (i % 10 == 9)
-					KdPrint(("\n"));
-
-			}
-		KdPrint(("\n"));
+		for (j = 0; j < 100; j++)
+		{
+			KdPrint(("%x|%x ", func_code[devSeq][j][0], func_code[devSeq][j][1]));
+			if (j % 10 == 9)
+				KdPrint(("\n"));
+		}*/
 
 		switch (urb->UrbHeader.Function)
 		{
@@ -298,6 +322,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			//0x28
 			if (urb->UrbControlDescriptorRequest.DescriptorType == 0x22)
 			{
+				
 				//Íê³Éº¯Êý
 				IoCopyCurrentIrpStackLocationToNext(Irp);
 				IoSetCompletionRoutine(Irp,
@@ -344,6 +369,14 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	return IoCallDriver(pdx->LowerDeviceObject, Irp);
 }
 
+ULONG GetDevSeq(IN PDEVICE_OBJECT pdo)
+{
+	ULONG i;
+	for (i = 0; i < lowerDev_num; i++)
+		if (lowerDev[i] == pdo)
+			return i;
+	return -1;
+}
 
 #pragma LOCKEDCODE				// make no assumptions about pageability of dispatch fcns
 NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp)

@@ -14,7 +14,7 @@
 
 
 #define DRIVERNAME "MyFileFilter(zhangfan!)"					// for use in messages
-#define TARGETDRIVER L"\\Driver\\usbhub"
+#define TARGETDRIVER L"\\Driver\\usbehci"
 
 
 
