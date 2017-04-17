@@ -4,6 +4,8 @@
 #include <srb.h>
 #include <scsi.h>
 
+#define MEM_TAG 'mtag'	//32bit
+
 NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo);
 VOID DriverUnload(IN PDRIVER_OBJECT fido);
 NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp);
@@ -29,6 +31,30 @@ ULONG j = 0;
 PDEVICE_OBJECT lowerDev[10];
 ULONG lowerDev_num = 0;
 
+typedef struct {
+	ULONG TranferFlags;
+	ULONG Len;
+	PVOID Buf;
+	PVOID MDLbuf;
+}BULK_STRUCTURE;
+
+typedef struct {
+	LIST_ENTRY list_entry;
+	BULK_STRUCTURE Bulk_in;
+	BULK_STRUCTURE Bulk_out;
+} STR_NODE;
+
+KSPIN_LOCK	list_lock;
+KEVENT list_event;
+LIST_ENTRY str_list_head;
+
+STR_NODE *mallocStrNode()
+{
+	STR_NODE *ret = (STR_NODE *)ExAllocatePoolWithTag(
+		NonPagedPool, sizeof(STR_NODE), MEM_TAG);
+	return ret;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 #pragma INITCODE 
 extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
@@ -46,7 +72,7 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 	//DriverObject->MajorFunction[IRP_MJ_SCSI] = DispatchForSCSI;
 
 
-	if (file_handle == NULL)
+	/*if (file_handle == NULL)
 	{
 		InitializeObjectAttributes(
 			&object_attributes,
@@ -66,7 +92,12 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 			FILE_NON_DIRECTORY_FILE | FILE_RANDOM_ACCESS | FILE_SYNCHRONOUS_IO_NONALERT,
 			NULL,
 			0);
-	}
+	}*/
+	
+	KeInitializeEvent(&list_event, SynchronizationEvent, TRUE);
+	KeInitializeSpinLock(&list_lock);
+	InitializeListHead(&str_list_head);
+
 	return STATUS_SUCCESS;
 }							// DriverEntry
 
@@ -228,6 +259,7 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 	NTSTATUS status;
 	UCHAR *pbuf;
 	ULONG len;
+	ULONG i;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB)stack->Parameters.Others.Argument1;
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
@@ -263,10 +295,14 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 		case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
 			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
 			{
-				//KdPrint(("BULK OR INTERRUPT TRANSFER read success.IRP: %x.\n", Irp));
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
-				//KdPrint(("Bulk or interrupt transfer len: %d.\n", len));
+				KdPrint(("URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER completion\n"));
+				KdPrint(("TransferFlags: %#x\n", urb->UrbBulkOrInterruptTransfer.TransferFlags));
+				KdPrint(("Buffer Length: %d\n", len));
+				for (i = 0; i < len; i++)
+					KdPrint(("%x", pbuf[i]));
+				KdPrint(("\n"));
 			}
 			break;
 		default:
@@ -284,10 +320,12 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 #pragma LOCKEDCODE
 NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {
-	KdPrint(("Enter Inernal Device control. IRP: %x.\n", Irp));
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB) stack->Parameters.Others.Argument1;
+	ULONG i;
+	STR_NODE *str_node;
+
 	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB
 		&& urb != NULL)
 	{
@@ -339,6 +377,19 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			//最低位为传输方向
 			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
 			{
+				UCHAR *pbuf;
+				ULONG len;
+				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
+				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+				
+				str_node = mallocStrNode();
+				if (str_node == NULL)
+				{
+					KdPrint(("Node malloc failed.\n"));
+					break;
+				}
+				str_node->Bulk_out.Buf = 
+
 				//KdPrint(("Input. IRP: %x.\n", Irp));
 				//完成函数
 				IoCopyCurrentIrpStackLocationToNext(Irp);
@@ -367,6 +418,20 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	}
 	IoSkipCurrentIrpStackLocation(Irp);
 	return IoCallDriver(pdx->LowerDeviceObject, Irp);
+}
+
+void MyWriteFile(UCHAR *pbuf, ULONG len)
+{
+	NTSTATUS status;
+	status = ZwWriteFile(
+		file_handle, NULL, NULL, NULL,
+		&io_status,
+		(PVOID)pbuf, len, &offset,
+		NULL
+	);
+	offset.QuadPart += len;
+	if (!NT_SUCCESS(status))
+		KdPrint(("Write file failed.\n"));
 }
 
 ULONG GetDevSeq(IN PDEVICE_OBJECT pdo)
