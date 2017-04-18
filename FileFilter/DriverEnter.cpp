@@ -16,6 +16,7 @@ ULONG GetDeviceTypeToUse(PDEVICE_OBJECT pdo);
 NTSTATUS StartDeviceCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 NTSTATUS UsageNotificationCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 ULONG GetDevSeq(IN PDEVICE_OBJECT pdo);
+VOID GetListTail();
 
 
 HANDLE file_handle = NULL;
@@ -31,6 +32,8 @@ ULONG j = 0;
 PDEVICE_OBJECT lowerDev[10];
 ULONG lowerDev_num = 0;
 
+
+///////////////
 typedef struct {
 	ULONG TranferFlags;
 	ULONG Len;
@@ -46,7 +49,7 @@ typedef struct {
 
 KSPIN_LOCK	list_lock;
 KEVENT list_event;
-LIST_ENTRY str_list_head;
+LIST_ENTRY list_head;
 
 STR_NODE *mallocStrNode()
 {
@@ -96,7 +99,7 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 	
 	KeInitializeEvent(&list_event, SynchronizationEvent, TRUE);
 	KeInitializeSpinLock(&list_lock);
-	InitializeListHead(&str_list_head);
+	InitializeListHead(&list_head);
 
 	return STATUS_SUCCESS;
 }							// DriverEntry
@@ -260,6 +263,7 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 	UCHAR *pbuf;
 	ULONG len;
 	ULONG i;
+	STR_NODE *str_node = (STR_NODE *)Context;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB)stack->Parameters.Others.Argument1;
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
@@ -297,12 +301,19 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 			{
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
-				KdPrint(("URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER completion\n"));
-				KdPrint(("TransferFlags: %#x\n", urb->UrbBulkOrInterruptTransfer.TransferFlags));
-				KdPrint(("Buffer Length: %d\n", len));
-				for (i = 0; i < len; i++)
-					KdPrint(("%x", pbuf[i]));
-				KdPrint(("\n"));
+				if (str_node != NULL)
+				{
+					str_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+					memcpy(str_node->Bulk_in.Buf, pbuf, len);
+					str_node->Bulk_in.Len = len;
+					str_node->Bulk_in.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
+
+					//add node to list
+					ExInterlockedInsertTailList(&list_head, (PLIST_ENTRY)str_node, &list_lock);
+					//KeSetEvent(&list_event, 0, FALSE);
+
+					GetListTail();
+				}
 			}
 			break;
 		default:
@@ -360,7 +371,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			//0x28
 			if (urb->UrbControlDescriptorRequest.DescriptorType == 0x22)
 			{
-				
+
 				//完成函数
 				IoCopyCurrentIrpStackLocationToNext(Irp);
 				IoSetCompletionRoutine(Irp,
@@ -388,14 +399,21 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 					KdPrint(("Node malloc failed.\n"));
 					break;
 				}
-				str_node->Bulk_out.Buf = 
+				str_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+				if (str_node->Bulk_out.Buf != NULL)
+				{
+					memcpy(str_node->Bulk_out.Buf, pbuf, len);
+					str_node->Bulk_out.Len = len;
+					str_node->Bulk_out.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
+				}
+					
+				
 
-				//KdPrint(("Input. IRP: %x.\n", Irp));
 				//完成函数
 				IoCopyCurrentIrpStackLocationToNext(Irp);
 				IoSetCompletionRoutine(Irp,
 					InternalCompletion,
-					NULL,
+					str_node,
 					TRUE,
 					TRUE,
 					TRUE);
@@ -420,7 +438,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	return IoCallDriver(pdx->LowerDeviceObject, Irp);
 }
 
-void MyWriteFile(UCHAR *pbuf, ULONG len)
+VOID MyWriteFile(UCHAR *pbuf, ULONG len)
 {
 	NTSTATUS status;
 	status = ZwWriteFile(
@@ -441,6 +459,33 @@ ULONG GetDevSeq(IN PDEVICE_OBJECT pdo)
 		if (lowerDev[i] == pdo)
 			return i;
 	return -1;
+}
+
+VOID GetListTail()
+{
+	STR_NODE *str_node;
+	str_node = (STR_NODE *)ExInterlockedRemoveHeadList(&list_head, &list_lock);
+	ULONG i;
+	UCHAR *pbuf;
+	if (str_node != NULL)
+	{
+		KdPrint(("falgs: %#x\t%#x\n", str_node->Bulk_out.TranferFlags, str_node->Bulk_in.TranferFlags));
+		KdPrint(("len: %d\t%d\n", str_node->Bulk_out.Len, str_node->Bulk_in.Len));
+		KdPrint(("buf: "));
+		pbuf = (UCHAR *)str_node->Bulk_out.Buf;
+		for (i = 0; i < str_node->Bulk_in.Len; i++)
+			KdPrint(("%02x ", pbuf[i]));
+		KdPrint(("\t"));
+		pbuf = (UCHAR *)str_node->Bulk_in.Buf;
+		for (i = 0; i < str_node->Bulk_in.Len; i++)
+			KdPrint(("%02x ", pbuf[i]));
+		KdPrint(("\n"));
+
+		//free memory
+		ExFreePoolWithTag(str_node->Bulk_in.Buf, MEM_TAG);
+		ExFreePoolWithTag(str_node->Bulk_out.Buf, MEM_TAG);
+		ExFreePoolWithTag(str_node, MEM_TAG);
+	}
 }
 
 #pragma LOCKEDCODE				// make no assumptions about pageability of dispatch fcns
