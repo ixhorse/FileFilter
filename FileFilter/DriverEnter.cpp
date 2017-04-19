@@ -7,7 +7,7 @@
 #define MEM_TAG 'mtag'	//32bit
 
 NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo);
-VOID DriverUnload(IN PDRIVER_OBJECT fido);
+VOID DriverUnload(IN PDRIVER_OBJECT DriverObject);
 NTSTATUS DispatchAny(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 NTSTATUS DispatchPower(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp);
@@ -15,12 +15,15 @@ NTSTATUS DispatchWmi(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 ULONG GetDeviceTypeToUse(PDEVICE_OBJECT pdo);
 NTSTATUS StartDeviceCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
 NTSTATUS UsageNotificationCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVICE_EXTENSION pdx);
+NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp);
+NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp, IN PVOID Context);
+NTSTATUS DispatchIoDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 ULONG GetDevSeq(IN PDEVICE_OBJECT pdo);
-VOID GetListTail();
+VOID GetListTail(IN PDEVICE_EXTENSION pdx);
+LIST_NODE *mallocStrNode();
 
 
 HANDLE file_handle = NULL;
-NTSTATUS  status;
 OBJECT_ATTRIBUTES object_attributes;
 IO_STATUS_BLOCK io_status;
 LARGE_INTEGER offset = { 0 };
@@ -31,32 +34,6 @@ ULONG func_num[10] = { 0 };
 ULONG j = 0;
 PDEVICE_OBJECT lowerDev[10];
 ULONG lowerDev_num = 0;
-
-
-///////////////
-typedef struct {
-	ULONG TranferFlags;
-	ULONG Len;
-	PVOID Buf;
-	PVOID MDLbuf;
-}BULK_STRUCTURE;
-
-typedef struct {
-	LIST_ENTRY list_entry;
-	BULK_STRUCTURE Bulk_in;
-	BULK_STRUCTURE Bulk_out;
-} STR_NODE;
-
-KSPIN_LOCK	list_lock;
-KEVENT list_event;
-LIST_ENTRY list_head;
-
-STR_NODE *mallocStrNode()
-{
-	STR_NODE *ret = (STR_NODE *)ExAllocatePoolWithTag(
-		NonPagedPool, sizeof(STR_NODE), MEM_TAG);
-	return ret;
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 #pragma INITCODE 
@@ -72,6 +49,7 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 	DriverObject->MajorFunction[IRP_MJ_POWER] = DispatchPower;
 	DriverObject->MajorFunction[IRP_MJ_PNP] = DispatchPnp;
 	DriverObject->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = DispatchInternalDeviceControl;
+	DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DispatchIoDeviceControl;
 	//DriverObject->MajorFunction[IRP_MJ_SCSI] = DispatchForSCSI;
 
 
@@ -96,10 +74,6 @@ extern "C" NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
 			NULL,
 			0);
 	}*/
-	
-	KeInitializeEvent(&list_event, SynchronizationEvent, TRUE);
-	KeInitializeSpinLock(&list_lock);
-	InitializeListHead(&list_head);
 
 	return STATUS_SUCCESS;
 }							// DriverEntry
@@ -146,8 +120,13 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo)
 		PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 
 		do
-		{						// finish initialization
+		{	
+			// finish initialization
 			IoInitializeRemoveLock(&pdx->RemoveLock, 0, 0, 0);
+			KeInitializeEvent(&pdx->List_event, SynchronizationEvent, TRUE);
+			KeInitializeSpinLock(&pdx->ListLock);
+			InitializeListHead(&pdx->ListHead);
+
 			pdx->DeviceObject = fido;
 			pdx->Pdo = pdo;
 			//将过滤驱动附加在底层驱动之上
@@ -250,7 +229,6 @@ NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		TRUE,
 		TRUE);
 	status = IoCallDriver(pdx->LowerDeviceObject, Irp);
-	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
 	return status;
 }
 ///////////////////////////////////////////////////////////////////////////////
@@ -263,10 +241,12 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 	UCHAR *pbuf;
 	ULONG len;
 	ULONG i;
-	STR_NODE *str_node = (STR_NODE *)Context;
+	LIST_NODE *list_node = (LIST_NODE *)Context;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB)stack->Parameters.Others.Argument1;
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
+
+
 	if (urb != NULL)
 	{
 		ULONG devSeq = GetDevSeq(pdx->Pdo);
@@ -301,18 +281,18 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 			{
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
-				if (str_node != NULL)
+				if (list_node != NULL)
 				{
-					str_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
-					memcpy(str_node->Bulk_in.Buf, pbuf, len);
-					str_node->Bulk_in.Len = len;
-					str_node->Bulk_in.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
+					list_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+					memcpy(list_node->Bulk_in.Buf, pbuf, len);
+					list_node->Bulk_in.Len = len;
+					list_node->Bulk_in.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
 
 					//add node to list
-					ExInterlockedInsertTailList(&list_head, (PLIST_ENTRY)str_node, &list_lock);
+					ExInterlockedInsertTailList(&pdx->ListHead, (PLIST_ENTRY)list_node, &pdx->ListLock);
 					//KeSetEvent(&list_event, 0, FALSE);
 
-					GetListTail();
+					GetListTail(pdx);
 				}
 			}
 			break;
@@ -325,18 +305,23 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 
 		IoMarkIrpPending(Irp);
 	}
+
+	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
+
 	return Irp->IoStatus.Status;
 }
 
 #pragma LOCKEDCODE
 NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {
+	NTSTATUS status;
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
 	PURB urb = (PURB) stack->Parameters.Others.Argument1;
 	ULONG i;
-	STR_NODE *str_node;
+	LIST_NODE *list_node;
 
+	status = IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB
 		&& urb != NULL)
 	{
@@ -393,18 +378,18 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
 				
-				str_node = mallocStrNode();
-				if (str_node == NULL)
+				list_node = mallocStrNode();
+				if (list_node == NULL)
 				{
 					KdPrint(("Node malloc failed.\n"));
 					break;
 				}
-				str_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
-				if (str_node->Bulk_out.Buf != NULL)
+				list_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+				if (list_node->Bulk_out.Buf != NULL)
 				{
-					memcpy(str_node->Bulk_out.Buf, pbuf, len);
-					str_node->Bulk_out.Len = len;
-					str_node->Bulk_out.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
+					memcpy(list_node->Bulk_out.Buf, pbuf, len);
+					list_node->Bulk_out.Len = len;
+					list_node->Bulk_out.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
 				}
 					
 				
@@ -413,7 +398,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 				IoCopyCurrentIrpStackLocationToNext(Irp);
 				IoSetCompletionRoutine(Irp,
 					InternalCompletion,
-					str_node,
+					list_node,
 					TRUE,
 					TRUE,
 					TRUE);
@@ -434,9 +419,71 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			break;
 		}
 	}
+
 	IoSkipCurrentIrpStackLocation(Irp);
-	return IoCallDriver(pdx->LowerDeviceObject, Irp);
+	status = IoCallDriver(pdx->LowerDeviceObject, Irp);
+
+	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
+
+	return status;
 }
+
+
+NTSTATUS DispatchIoDeviceControl(
+	IN PDEVICE_OBJECT fido,
+	IN PIRP Irp
+)
+{
+	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	NTSTATUS status;
+	ULONG outlen = stack->Parameters.DeviceIoControl.OutputBufferLength;
+	ULONG node_len = sizeof(LIST_NODE);
+	ULONG ret_len = 0;
+	PVOID pBuf = Irp->AssociatedIrp.SystemBuffer;
+	LIST_NODE *list_node = NULL;
+
+	IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
+	
+	status = STATUS_SUCCESS;
+	switch (stack->Parameters.DeviceIoControl.IoControlCode)
+	{
+	case IOCTL_READ_LIST:
+		list_node = (LIST_NODE *)ExInterlockedRemoveHeadList(&pdx->ListHead, &pdx->ListLock);
+
+		if (outlen < node_len)
+		{
+			status = STATUS_INVALID_PARAMETER;
+			break;
+		}
+		if (list_node != NULL)
+		{
+			RtlCopyMemory(pBuf, list_node, node_len);
+			ret_len = node_len;
+
+			//free memory
+			ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
+			ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
+			ExFreePoolWithTag(list_node, MEM_TAG);
+
+			//irp
+			Irp->IoStatus.Information = ret_len;
+			Irp->IoStatus.Status = status;
+			IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		}
+		break;
+
+	default:
+		IoSkipCurrentIrpStackLocation(Irp);
+		status = IoCallDriver(pdx->LowerDeviceObject, Irp);
+		break;
+	}
+
+	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
+
+	return status;
+}
+
 
 VOID MyWriteFile(UCHAR *pbuf, ULONG len)
 {
@@ -461,30 +508,30 @@ ULONG GetDevSeq(IN PDEVICE_OBJECT pdo)
 	return -1;
 }
 
-VOID GetListTail()
+VOID GetListTail(IN PDEVICE_EXTENSION pdx)
 {
-	STR_NODE *str_node;
-	str_node = (STR_NODE *)ExInterlockedRemoveHeadList(&list_head, &list_lock);
+	LIST_NODE *list_node;
+	list_node = (LIST_NODE *)ExInterlockedRemoveHeadList(&pdx->ListHead, &pdx->ListLock);
 	ULONG i;
 	UCHAR *pbuf;
-	if (str_node != NULL)
+	if (list_node != NULL)
 	{
-		KdPrint(("falgs: %#x\t%#x\n", str_node->Bulk_out.TranferFlags, str_node->Bulk_in.TranferFlags));
-		KdPrint(("len: %d\t%d\n", str_node->Bulk_out.Len, str_node->Bulk_in.Len));
+		KdPrint(("falgs: %#x\t%#x\n", list_node->Bulk_out.TranferFlags, list_node->Bulk_in.TranferFlags));
+		KdPrint(("len: %d\t%d\n", list_node->Bulk_out.Len, list_node->Bulk_in.Len));
 		KdPrint(("buf: "));
-		pbuf = (UCHAR *)str_node->Bulk_out.Buf;
-		for (i = 0; i < str_node->Bulk_in.Len; i++)
+		pbuf = (UCHAR *)list_node->Bulk_out.Buf;
+		for (i = 0; i < list_node->Bulk_in.Len; i++)
 			KdPrint(("%02x ", pbuf[i]));
 		KdPrint(("\t"));
-		pbuf = (UCHAR *)str_node->Bulk_in.Buf;
-		for (i = 0; i < str_node->Bulk_in.Len; i++)
+		pbuf = (UCHAR *)list_node->Bulk_in.Buf;
+		for (i = 0; i < list_node->Bulk_in.Len; i++)
 			KdPrint(("%02x ", pbuf[i]));
 		KdPrint(("\n"));
 
 		//free memory
-		ExFreePoolWithTag(str_node->Bulk_in.Buf, MEM_TAG);
-		ExFreePoolWithTag(str_node->Bulk_out.Buf, MEM_TAG);
-		ExFreePoolWithTag(str_node, MEM_TAG);
+		ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
+		ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
+		ExFreePoolWithTag(list_node, MEM_TAG);
 	}
 }
 
@@ -636,6 +683,8 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 	ULONG fcn = stack->MinorFunction;
 	NTSTATUS status;
 	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	LIST_NODE *list_node;
+
 	status = IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	if (!NT_SUCCESS(status))
 		return CompleteRequest(Irp, status, 0);
@@ -702,6 +751,25 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		IoSkipCurrentIrpStackLocation(Irp);
 		status = IoCallDriver(pdx->LowerDeviceObject, Irp);
 		IoReleaseRemoveLockAndWait(&pdx->RemoveLock, Irp);
+
+		//回收链表内存
+		while (1) {
+			list_node = (LIST_NODE *)ExfInterlockedRemoveHeadList(
+				&pdx->ListHead, &pdx->ListLock);
+			if (list_node != NULL) 
+			{
+				if(list_node->Bulk_in.Buf != NULL)
+					ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
+				if(list_node->Bulk_out.Buf != NULL)
+					ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
+
+					ExFreePoolWithTag(list_node, MEM_TAG);
+			}
+			else
+				break;
+		}
+
+		IoDetachDevice(pdx->LowerDeviceObject);
 		RemoveDevice(fido);
 		return status;
 	}						// remove device
@@ -770,3 +838,11 @@ NTSTATUS UsageNotificationCompletionRoutine(PDEVICE_OBJECT fido, PIRP Irp, PDEVI
 }							// UsageNotificationCompletionRoutine
 
 #pragma LOCKEDCODE				// force inline functions into nonpaged code
+
+
+LIST_NODE *mallocStrNode()
+{
+	LIST_NODE *ret = (LIST_NODE *)ExAllocatePoolWithTag(
+		NonPagedPool, sizeof(LIST_NODE), MEM_TAG);
+	return ret;
+}

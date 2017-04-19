@@ -17,11 +17,23 @@
 #define TARGETDRIVER L"\\Driver\\usbhub"
 
 
-
 ///////////////////////////////////////////////////////////////////////////////
 
 // Device extension structure
 
+
+typedef struct {
+	ULONG TranferFlags;
+	ULONG Len;
+	PVOID Buf;
+	PVOID MDLbuf;
+}BULK_STRUCTURE;
+
+typedef struct {
+	LIST_ENTRY list_entry;
+	BULK_STRUCTURE Bulk_in;
+	BULK_STRUCTURE Bulk_out;
+} LIST_NODE;
 
 
 typedef struct tagDEVICE_EXTENSION {
@@ -34,8 +46,21 @@ typedef struct tagDEVICE_EXTENSION {
 
 	IO_REMOVE_LOCK RemoveLock;
 
+	LIST_ENTRY ListHead;
+
+	KSPIN_LOCK ListLock;
+
+	KEVENT List_event;
+
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
+
+#define IOCTL_READ_LIST \
+	CTL_CODE(\
+			FILE_DEVICE_UNKNOWN,\
+			0X822,\
+			METHOD_BUFFERED, \
+			FILE_ANY_ACCESS)
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -50,8 +75,5 @@ NTSTATUS CompleteRequest(IN PIRP Irp, IN NTSTATUS status, IN ULONG_PTR info);
 
 NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp);
 
-NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp);
-
-//NTSTATUS InternalCompletion(IN PIRP Irp);
 #endif // DRIVER_H
 
