@@ -25,7 +25,7 @@
 typedef struct {
 	ULONG TranferFlags;
 	ULONG Len;
-	PVOID Buf;
+	UCHAR Buf[100];
 	PVOID MDLbuf;
 }BULK_STRUCTURE;
 

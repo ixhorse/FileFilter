@@ -283,7 +283,7 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
 				if (list_node != NULL)
 				{
-					list_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+					//list_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
 					memcpy(list_node->Bulk_in.Buf, pbuf, len);
 					list_node->Bulk_in.Len = len;
 					list_node->Bulk_in.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
@@ -292,7 +292,7 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 					ExInterlockedInsertTailList(&pdx->ListHead, (PLIST_ENTRY)list_node, &pdx->ListLock);
 					//KeSetEvent(&list_event, 0, FALSE);
 
-					GetListTail(pdx);
+					//GetListTail(pdx);
 				}
 			}
 			break;
@@ -384,7 +384,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 					KdPrint(("Node malloc failed.\n"));
 					break;
 				}
-				list_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+				//list_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
 				if (list_node->Bulk_out.Buf != NULL)
 				{
 					memcpy(list_node->Bulk_out.Buf, pbuf, len);
@@ -465,12 +465,12 @@ NTSTATUS DispatchIoDeviceControl(
 			ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
 			ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
 			ExFreePoolWithTag(list_node, MEM_TAG);
+		}
 
 			//irp
 			Irp->IoStatus.Information = ret_len;
 			Irp->IoStatus.Status = status;
 			IoCompleteRequest(Irp, IO_NO_INCREMENT);
-		}
 		break;
 
 	default:
@@ -529,8 +529,8 @@ VOID GetListTail(IN PDEVICE_EXTENSION pdx)
 		KdPrint(("\n"));
 
 		//free memory
-		ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
-		ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
+		//ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
+		//ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
 		ExFreePoolWithTag(list_node, MEM_TAG);
 	}
 }

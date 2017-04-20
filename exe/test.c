@@ -1,31 +1,30 @@
+#include <windows.h>
 #include <stdio.h>
-#include <Windows.h>
-
-typedef struct {
-	ULONG TranferFlags;
-	ULONG Len;
-	PVOID Buf;
-	PVOID MDLbuf;
-}BULK_STRUCTURE;
-
-typedef struct {
-	LIST_ENTRY list_entry;
-	BULK_STRUCTURE Bulk_in;
-	BULK_STRUCTURE Bulk_out;
-} LIST_NODE;
-
-#define IOCTL_READ_LIST \
-	CTL_CODE(\
-			FILE_DEVICE_UNKNOWN,\
-			0X822,\
-			METHOD_BUFFERED, \
-			FILE_ANY_ACCESS)
 
 int main()
 {
-	HANDLE device = NULL;
-	HANDLE readHandle = NULL;
 
-	//open device
-	
+	HANDLE hDevice =
+		CreateFile("\\\\.\\LineDevice",
+			GENERIC_READ | GENERIC_WRITE,
+			0,		// share mode none
+			NULL,	// no security
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			NULL);		// no template
+
+	if (hDevice == INVALID_HANDLE_VALUE)
+	{
+		printf("Failed to obtain file handle to device "
+			"with Win32 error code: %d\n",
+			GetLastError());
+		return 1;
+	}
+
+	DWORD dRet;
+	ReadFile(hDevice, NULL, 0, &dRet, NULL);
+
+	CloseHandle(hDevice);
+
+	return 0;
 }
