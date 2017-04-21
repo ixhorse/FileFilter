@@ -281,6 +281,7 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 			{
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+				len = (len > 100 ? 100 : len);
 				if (list_node != NULL)
 				{
 					//list_node->Bulk_in.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
@@ -377,6 +378,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 				ULONG len;
 				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+				len = (len > 100 ? 100 : len);
 				
 				list_node = mallocStrNode();
 				if (list_node == NULL)
@@ -453,6 +455,7 @@ NTSTATUS DispatchIoDeviceControl(
 
 		if (outlen < node_len)
 		{
+			KdPrint(("len wrong.\n"));
 			status = STATUS_INVALID_PARAMETER;
 			break;
 		}
@@ -462,8 +465,6 @@ NTSTATUS DispatchIoDeviceControl(
 			ret_len = node_len;
 
 			//free memory
-			ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
-			ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
 			ExFreePoolWithTag(list_node, MEM_TAG);
 		}
 

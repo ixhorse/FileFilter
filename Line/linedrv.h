@@ -46,7 +46,10 @@ NTSTATUS HelloDDKCreate(IN PDEVICE_OBJECT pDevObj,
 NTSTATUS HelloDDKClose(IN PDEVICE_OBJECT pDevObj,
 	IN PIRP pIrp);
 
-extern POBJECT_TYPE IoDriverObjectType;
+NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp, IN PVOID Context);
+
+extern POBJECT_TYPE *IoDriverObjectType;
 
 NTSTATUS ObReferenceObjectByName(
 	PUNICODE_STRING ObjectName,
@@ -62,7 +65,7 @@ NTSTATUS ObReferenceObjectByName(
 typedef struct {
 	ULONG TranferFlags;
 	ULONG Len;
-	UCHAR Buf;
+	UCHAR Buf[100];
 	PVOID MDLbuf;
 }BULK_STRUCTURE;
 

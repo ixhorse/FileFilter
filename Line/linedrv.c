@@ -1,7 +1,7 @@
 #include "linedrv.h"
 
 #define FILTERNAME L"\\Driver\\FileFilter"
-#define MEM_TAG "mtag"
+#define MEM_TAG 'mtag'
 
 #pragma INITCODE
 NTSTATUS DriverEntry(
@@ -61,14 +61,18 @@ NTSTATUS CreateDevice(
 
 	//创建符号链接
 	UNICODE_STRING symLinkName;
+	WCHAR dest_buf[256];
 	RtlInitUnicodeString(&symLinkName, L"\\??\\LineDevice");
-	pDevExt->ustrSymLinkName = symLinkName;
+	RtlInitEmptyUnicodeString(&pDevExt->ustrSymLinkName, dest_buf, symLinkName.Length);
+	RtlCopyUnicodeString(&pDevExt->ustrSymLinkName, &symLinkName);
 	status = IoCreateSymbolicLink(&symLinkName, &devName);
 	if (!NT_SUCCESS(status))
 	{
 		IoDeleteDevice(pDevObj);
 		return status;
 	}
+
+	
 	return STATUS_SUCCESS;
 }
 
@@ -85,23 +89,47 @@ VOID HelloDDKUnload(IN PDRIVER_OBJECT pDriverObject)
 	PDEVICE_OBJECT	pNextObj;
 	KdPrint(("DriverA:Enter A DriverUnload\n"));
 	pNextObj = pDriverObject->DeviceObject;
-	while (pNextObj != NULL)
-	{
-		PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
-			pNextObj->DeviceExtension;
+	PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
+		pNextObj->DeviceExtension;
 
-		//删除符号链接
-		UNICODE_STRING pLinkName = pDevExt->ustrSymLinkName;
-		IoDeleteSymbolicLink(&pLinkName);
-		pNextObj = pNextObj->NextDevice;
-		IoDeleteDevice(pDevExt->pDevice);
-	}
+	//删除符号链接
+	UNICODE_STRING pLinkName;
+	RtlInitUnicodeString(&pLinkName, L"\\??\\LineDevice");
+	IoDeleteSymbolicLink(&pLinkName);
+	IoDeleteDevice(pNextObj);
 	KdPrint(("DriverA:Leave A DriverUnload\n"));
 }
 
 
+VOID PrintNode(
+	IN LIST_NODE *list_node)
+{
+	UCHAR * pBuf;
+	ULONG len;
+	ULONG i;
+
+	if (list_node != NULL)
+	{
+		KdPrint(("falgs: %#x\t%#x\n", list_node->Bulk_out.TranferFlags, list_node->Bulk_in.TranferFlags));
+		KdPrint(("len: %d\t%d\n", list_node->Bulk_out.Len, list_node->Bulk_in.Len));
+		KdPrint(("buf: "));
+		pBuf = (UCHAR *)list_node->Bulk_out.Buf;
+		for (i = 0; i < list_node->Bulk_in.Len; i++)
+			KdPrint(("%02x ", pBuf[i]));
+		KdPrint(("\t"));
+		pBuf = (UCHAR *)list_node->Bulk_in.Buf;
+		for (i = 0; i < list_node->Bulk_in.Len; i++)
+			KdPrint(("%02x ", pBuf[i]));
+		KdPrint(("\n"));
+	}
+	else
+		KdPrint(("Node NULL.\n"));
+}
+
+
+
 /************************************************************************
-* 函数名称:HelloDDKRead
+* 函数名称:HelloDDK
 * 功能描述:对读IRP进行处理
 * 参数列表:
 pDevObj:功能设备对象
@@ -112,6 +140,8 @@ pIrp:从IO请求包
 NTSTATUS HelloDDKRead(IN PDEVICE_OBJECT pDevObj,
 	IN PIRP pIrp)
 {
+	KdPrint(("Line: enter ioctl.\n"));
+
 	NTSTATUS status;
 	PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
 		pDevObj->DeviceExtension;
@@ -119,78 +149,89 @@ NTSTATUS HelloDDKRead(IN PDEVICE_OBJECT pDevObj,
 	PDEVICE_OBJECT fltDevice = NULL;
 	UNICODE_STRING fltName;
 	RtlInitUnicodeString(&fltName, FILTERNAME);
+	ULONG ret_len;
 
 	status = ObReferenceObjectByName(
 		&fltName,
 		OBJ_CASE_INSENSITIVE,
 		NULL,
 		0,
-		IoDriverObjectType,
+		*IoDriverObjectType,
 		KernelMode,
 		NULL,
-		&fltDriver
+		(PVOID)&fltDriver
 	);
 
 	if (!NT_SUCCESS(status))
 	{
 		KdPrint(("Couldn't get driver object.\n"));
 	}
-	else
-	{
-		ObDereferenceObject(fltDriver);
-	}
+	//else
+	//{
+	//	//ObDereferenceObject(pDevObj->DriverObject);
+	//	//ObDereferenceObject(fltDriver);
+	//}
 
-	fltDevice = fltDriver->DeviceObject;
+	if (fltDriver != NULL)
+	{
+		fltDevice = fltDriver->DeviceObject;
+	}
+	//if (fltDevice->NextDevice != NULL)
+	//{
+	//	fltDevice = fltDevice->NextDevice;
+	//}
+	fltDevice = fltDevice->NextDevice;
 	while (fltDevice)
 	{
-		PFILE_OBJECT FileObject;
-		PIRP newIrp = IoAllocateIrp(fltDevice->StackSize, FALSE);
+		PIRP newIrp = IoAllocateIrp(fltDevice->StackSize+1, FALSE);
 		IO_STATUS_BLOCK io_block;
 		PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
-		UCHAR * pBuf;
-		ULONG len;
-		LIST_NODE *list_node;
-		ULONG i;
+		LIST_NODE *list_node = (LIST_NODE *)ExAllocatePoolWithTag(NonPagedPool, sizeof(LIST_NODE), MEM_TAG);
+		
+		ret_len = 0;
 
 		newIrp->UserIosb = &io_block;
 		newIrp->Tail.Overlay.Thread = PsGetCurrentThread();
-		newIrp->AssociatedIrp.SystemBuffer = NULL;
+		newIrp->AssociatedIrp.SystemBuffer = list_node;
 
 		stack->MajorFunction = IRP_MJ_DEVICE_CONTROL;
+		stack->MinorFunction = 0;
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_READ_LIST;
 		stack->Parameters.DeviceIoControl.OutputBufferLength = sizeof(LIST_NODE);
 		
+		IoSetCompletionRoutine(newIrp,
+			IoCtlCompletion,
+			&ret_len,
+			TRUE,
+			TRUE,
+			TRUE);
 		status = IoCallDriver(fltDevice, newIrp);
 
 		if (!NT_SUCCESS(status))
 		{
-			break;
+			KdPrint(("Call failed. %x\n", status));
+			ExFreePoolWithTag(list_node, MEM_TAG);
+			fltDevice = fltDevice->NextDevice;
+			continue;
 		}
+		
+		ret_len = newIrp->IoStatus.Information;
+		RtlCopyMemory(pIrp->AssociatedIrp.SystemBuffer, list_node, sizeof(LIST_NODE));
+		//free
+		ExFreePoolWithTag(list_node, MEM_TAG);
+		//IoFreeIrp(newIrp);
 
-		list_node = (LIST_NODE *)newIrp->AssociatedIrp.SystemBuffer;
-
-		if (list_node != NULL)
-		{
-			KdPrint(("falgs: %#x\t%#x\n", list_node->Bulk_out.TranferFlags, list_node->Bulk_in.TranferFlags));
-			KdPrint(("len: %d\t%d\n", list_node->Bulk_out.Len, list_node->Bulk_in.Len));
-			KdPrint(("buf: "));
-			pBuf = (UCHAR *)list_node->Bulk_out.Buf;
-			for (i = 0; i < list_node->Bulk_in.Len; i++)
-				KdPrint(("%02x ", pBuf[i]));
-			KdPrint(("\t"));
-			pBuf = (UCHAR *)list_node->Bulk_in.Buf;
-			for (i = 0; i < list_node->Bulk_in.Len; i++)
-				KdPrint(("%02x ", pBuf[i]));
-			KdPrint(("\n"));
-
-		}
-
+		//fltDevice = fltDevice->NextDevice;
 		break;
 	}
 	
-
-	return STATUS_PENDING;
+	pIrp->IoStatus.Information = ret_len;
+	pIrp->IoStatus.Status = STATUS_SUCCESS;
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
 }
+
+
 
 
 /************************************************************************
@@ -235,4 +276,11 @@ NTSTATUS HelloDDKClose(IN PDEVICE_OBJECT pDevObj,
 	pIrp->IoStatus.Information = 0;	// bytes xfered
 	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
 	return status;
+}
+
+NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp, IN PVOID Context)
+{
+
+	return STATUS_MORE_PROCESSING_REQUIRED;
 }
