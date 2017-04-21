@@ -9,6 +9,20 @@
 			METHOD_BUFFERED, \
 			FILE_ANY_ACCESS)
 
+#define IOCTL_SET_FLAG \
+	CTL_CODE(\
+			FILE_DEVICE_UNKNOWN,\
+			0X823,\
+			METHOD_BUFFERED, \
+			FILE_ANY_ACCESS)
+
+#define IOCTL_CLEAR_FLAG \
+	CTL_CODE(\
+			FILE_DEVICE_UNKNOWN,\
+			0X824,\
+			METHOD_BUFFERED, \
+			FILE_ANY_ACCESS)
+
 typedef struct {
 	ULONG TranferFlags;
 	ULONG Len;
@@ -22,40 +36,17 @@ typedef struct {
 	BULK_STRUCTURE Bulk_out;
 } LIST_NODE;
 
-int main()
+
+void WINAPI ReadListThread(HANDLE *hDevice)
 {
 	LIST_NODE list_node;
 	DWORD dRet;
 	UCHAR * pBuf;
 	int i;
-	HANDLE hDevice =
-		CreateFile("\\\\.\\LineDevice",
-			GENERIC_READ | GENERIC_WRITE,
-			0,		// share mode none
-			NULL,	// no security
-			OPEN_EXISTING,
-			FILE_ATTRIBUTE_NORMAL,
-			NULL);		// no template
-
-	if (hDevice == INVALID_HANDLE_VALUE)
-	{
-		printf("Failed to obtain file handle to device "
-			"with Win32 error code: %d\n",
-			GetLastError());
-		return 1;
-	}
-
+	
 	while (1)
 	{
-
-		ReadFile(hDevice, &list_node, sizeof(LIST_NODE), &dRet, NULL);
-
-		/*if (!DeviceIoControl(hDevice, IOCTL_READ_LIST, NULL, 0, buf, 1000, &dRet, 0))
-		{
-		printf("fail.\n");
-		getchar();
-		}*/
-
+		ReadFile(*hDevice, &list_node, sizeof(LIST_NODE), &dRet, NULL);
 		if (dRet > 0)
 		{
 			printf("falgs: %#x\t%#x\n", list_node.Bulk_out.TranferFlags, list_node.Bulk_in.TranferFlags);
@@ -76,6 +67,39 @@ int main()
 			Sleep(1 * 1000);
 		}
 	}
+}
+
+int main()
+{
+	LIST_NODE list_node;
+	DWORD dRet;
+	UCHAR * pBuf;
+	int i;
+	HANDLE set_handle = NULL;
+	HANDLE hDevice =
+		CreateFile("\\\\.\\LineDevice",
+			GENERIC_READ | GENERIC_WRITE,
+			0,		// share mode none
+			NULL,	// no security
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			NULL);		// no template
+
+	if (hDevice == INVALID_HANDLE_VALUE)
+	{
+		printf("Failed to obtain file handle to device "
+			"with Win32 error code: %d\n",
+			GetLastError());
+		return 1;
+	}
+
+	DeviceIoControl(hDevice, IOCTL_SET_FLAG, NULL, 0, NULL, 0, &dRet, 0);
+
+	set_handle = CreateThread(NULL, 0, ReadListThread, &hDevice, 0, NULL);
+
+	getchar();
+
+	DeviceIoControl(hDevice, IOCTL_CLEAR_FLAG, NULL, 0, NULL, 0, &dRet, 0);
 
 	CloseHandle(hDevice);
 

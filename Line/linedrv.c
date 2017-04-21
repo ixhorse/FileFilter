@@ -3,12 +3,17 @@
 #define FILTERNAME L"\\Driver\\FileFilter"
 #define MEM_TAG 'mtag'
 
+PDRIVER_OBJECT fltDriver = NULL;
+PDEVICE_OBJECT fltDevice = NULL;
+
 #pragma INITCODE
 NTSTATUS DriverEntry(
 	IN PDRIVER_OBJECT pDriverObject,
 	IN PUNICODE_STRING pRegistryPath)
 {
 	NTSTATUS status;
+	UNICODE_STRING fltName;
+	RtlInitUnicodeString(&fltName, FILTERNAME);
 
 	//注册其他驱动调用函数入口
 	pDriverObject->DriverUnload = HelloDDKUnload;
@@ -16,9 +21,21 @@ NTSTATUS DriverEntry(
 	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = HelloDDKClose;
 	pDriverObject->MajorFunction[IRP_MJ_WRITE] = HelloDDKDispatchRoutine;
 	pDriverObject->MajorFunction[IRP_MJ_READ] = HelloDDKRead;
+	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = HelloDDKIoCtl;
 
 	//创建驱动设备对象
 	status = CreateDevice(pDriverObject);
+
+	status = ObReferenceObjectByName(
+		&fltName,
+		OBJ_CASE_INSENSITIVE,
+		NULL,
+		0,
+		*IoDriverObjectType,
+		KernelMode,
+		NULL,
+		(PVOID)&fltDriver
+	);
 
 	KdPrint(("DriverA:Leave A DriverEntry\n"));
 	return status;
@@ -140,37 +157,11 @@ pIrp:从IO请求包
 NTSTATUS HelloDDKRead(IN PDEVICE_OBJECT pDevObj,
 	IN PIRP pIrp)
 {
-	KdPrint(("Line: enter ioctl.\n"));
-
 	NTSTATUS status;
 	PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
 		pDevObj->DeviceExtension;
-	PDRIVER_OBJECT fltDriver = NULL;
-	PDEVICE_OBJECT fltDevice = NULL;
-	UNICODE_STRING fltName;
-	RtlInitUnicodeString(&fltName, FILTERNAME);
+
 	ULONG ret_len;
-
-	status = ObReferenceObjectByName(
-		&fltName,
-		OBJ_CASE_INSENSITIVE,
-		NULL,
-		0,
-		*IoDriverObjectType,
-		KernelMode,
-		NULL,
-		(PVOID)&fltDriver
-	);
-
-	if (!NT_SUCCESS(status))
-	{
-		KdPrint(("Couldn't get driver object.\n"));
-	}
-	//else
-	//{
-	//	//ObDereferenceObject(pDevObj->DriverObject);
-	//	//ObDereferenceObject(fltDriver);
-	//}
 
 	if (fltDriver != NULL)
 	{
@@ -283,4 +274,56 @@ NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
 {
 
 	return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+
+NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
+	IN PIRP pIrp)
+{
+	KdPrint(("Line: enter ioctl.\n"));
+	fltDevice = fltDriver->DeviceObject->NextDevice;
+
+	NTSTATUS status;
+	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(pIrp);
+
+	PIRP newIrp = IoAllocateIrp(fltDevice->StackSize + 1, FALSE);
+	IO_STATUS_BLOCK io_block;
+	PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
+
+	newIrp->UserIosb = &io_block;
+	newIrp->Tail.Overlay.Thread = PsGetCurrentThread();
+
+	stack->MajorFunction = IRP_MJ_DEVICE_CONTROL;
+	stack->MinorFunction = 0;
+	stack->Parameters.DeviceIoControl.OutputBufferLength = 0;
+
+	switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
+	{
+	case IOCTL_SET_FLAG:
+		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_SET_FLAG;
+		break;
+
+	case IOCTL_CLEAR_FLAG:
+		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_CLEAR_FLAG;
+		break;
+	default:
+		break;
+	}
+	IoSetCompletionRoutine(newIrp,
+		IoCtlCompletion,
+		NULL,
+		TRUE,
+		TRUE,
+		TRUE);
+	status = IoCallDriver(fltDevice, newIrp);
+	KdPrint(("call status: %x\n", status));
+
+	IoCompleteRequest(newIrp, IO_NO_INCREMENT);
+	//free
+	//IoFreeIrp(newIrp);
+
+	pIrp->IoStatus.Information = 0;
+	pIrp->IoStatus.Status = STATUS_SUCCESS;
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
 }

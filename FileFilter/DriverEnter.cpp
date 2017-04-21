@@ -127,6 +127,7 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo)
 			KeInitializeSpinLock(&pdx->ListLock);
 			InitializeListHead(&pdx->ListHead);
 
+			pdx->flag = FALSE;
 			pdx->DeviceObject = fido;
 			pdx->Pdo = pdo;
 			//将过滤驱动附加在底层驱动之上
@@ -338,8 +339,8 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		if (!NT_SUCCESS(status))
 			KdPrint(("Write file failed. %x.\n", status));
 		status = STATUS_SUCCESS;*/
-		ULONG devSeq = GetDevSeq(pdx->Pdo);
-		ULONG j;
+		//ULONG devSeq = GetDevSeq(pdx->Pdo);
+		//ULONG j;
 		/*if (func_num[devSeq] < 100)
 		{
 			func_code[devSeq][func_num[devSeq]][0] = urb->UrbHeader.Function;
@@ -376,35 +377,36 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			{
 				UCHAR *pbuf;
 				ULONG len;
-				pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
-				len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
-				len = (len > 100 ? 100 : len);
-				
-				list_node = mallocStrNode();
-				if (list_node == NULL)
+				if (pdx->flag)
 				{
-					KdPrint(("Node malloc failed.\n"));
-					break;
-				}
-				//list_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
-				if (list_node->Bulk_out.Buf != NULL)
-				{
-					memcpy(list_node->Bulk_out.Buf, pbuf, len);
-					list_node->Bulk_out.Len = len;
-					list_node->Bulk_out.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
-				}
-					
-				
+					pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
+					len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
+					len = (len > 100 ? 100 : len);
 
-				//完成函数
-				IoCopyCurrentIrpStackLocationToNext(Irp);
-				IoSetCompletionRoutine(Irp,
-					InternalCompletion,
-					list_node,
-					TRUE,
-					TRUE,
-					TRUE);
-				return IoCallDriver(pdx->LowerDeviceObject, Irp);
+					list_node = mallocStrNode();
+					if (list_node == NULL)
+					{
+						KdPrint(("Node malloc failed.\n"));
+						break;
+					}
+					//list_node->Bulk_out.Buf = ExAllocatePoolWithTag(NonPagedPool, len, MEM_TAG);
+					if (list_node->Bulk_out.Buf != NULL)
+					{
+						memcpy(list_node->Bulk_out.Buf, pbuf, len);
+						list_node->Bulk_out.Len = len;
+						list_node->Bulk_out.TranferFlags = urb->UrbBulkOrInterruptTransfer.TransferFlags;
+					}
+
+					//完成函数
+					IoCopyCurrentIrpStackLocationToNext(Irp);
+					IoSetCompletionRoutine(Irp,
+						InternalCompletion,
+						list_node,
+						TRUE,
+						TRUE,
+						TRUE);
+					return IoCallDriver(pdx->LowerDeviceObject, Irp);
+				}
 			}
 			else
 			{
@@ -472,6 +474,37 @@ NTSTATUS DispatchIoDeviceControl(
 			Irp->IoStatus.Information = ret_len;
 			Irp->IoStatus.Status = status;
 			IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		break;
+
+	case IOCTL_SET_FLAG:
+		KdPrint(("Set flag.\n"));
+		pdx->flag = TRUE;
+
+		//irp
+		Irp->IoStatus.Information = 0;
+		Irp->IoStatus.Status = STATUS_SUCCESS;
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		break;
+
+	case IOCTL_CLEAR_FLAG:
+		KdPrint(("Clear flag.\n"));
+		pdx->flag = FALSE;
+
+		//回收链表内存
+		while (1) {
+			list_node = (LIST_NODE *)ExfInterlockedRemoveHeadList(
+				&pdx->ListHead, &pdx->ListLock);
+			if (list_node != NULL)
+			{
+				ExFreePoolWithTag(list_node, MEM_TAG);
+			}
+			else
+				break;
+		}
+		//irp
+		Irp->IoStatus.Information = 0;
+		Irp->IoStatus.Status = STATUS_SUCCESS;
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);
 		break;
 
 	default:
@@ -759,11 +792,6 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 				&pdx->ListHead, &pdx->ListLock);
 			if (list_node != NULL) 
 			{
-				if(list_node->Bulk_in.Buf != NULL)
-					ExFreePoolWithTag(list_node->Bulk_in.Buf, MEM_TAG);
-				if(list_node->Bulk_out.Buf != NULL)
-					ExFreePoolWithTag(list_node->Bulk_out.Buf, MEM_TAG);
-
 					ExFreePoolWithTag(list_node, MEM_TAG);
 			}
 			else
