@@ -306,6 +306,12 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 	case IOCTL_CLEAR_FLAG:
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_CLEAR_FLAG;
 		break;
+	case IOCTL_FINDFLT_FLAG:
+		stack->Parameters.DeviceIoControl.InputBufferLength = irpSp->Parameters.DeviceIoControl.InputBufferLength;
+		stack->Parameters.DeviceIoControl.OutputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
+		newIrp->AssociatedIrp.SystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
+		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_FINDFLT_FLAG;
+		break;
 	default:
 		break;
 	}
