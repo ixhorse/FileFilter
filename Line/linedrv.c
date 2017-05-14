@@ -104,7 +104,7 @@ pDriverObject:Çý¶¯¶ÔÏó
 VOID HelloDDKUnload(IN PDRIVER_OBJECT pDriverObject)
 {
 	PDEVICE_OBJECT	pNextObj;
-	KdPrint(("DriverA:Enter A DriverUnload\n"));
+	KdPrint(("DriverA:Enter line DriverUnload\n"));
 	pNextObj = pDriverObject->DeviceObject;
 	PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
 		pNextObj->DeviceExtension;
@@ -114,7 +114,7 @@ VOID HelloDDKUnload(IN PDRIVER_OBJECT pDriverObject)
 	RtlInitUnicodeString(&pLinkName, L"\\??\\LineDevice");
 	IoDeleteSymbolicLink(&pLinkName);
 	IoDeleteDevice(pNextObj);
-	KdPrint(("DriverA:Leave A DriverUnload\n"));
+	KdPrint(("DriverA:Leave line DriverUnload\n"));
 }
 
 
@@ -284,8 +284,15 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 	fltDevice = fltDriver->DeviceObject->NextDevice;
 
 	NTSTATUS status;
-	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(pIrp);
+	PDEVICE_OBJECT objectiveDev = NULL;
+	PFILE_OBJECT objectiveFile = NULL;
 
+	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(pIrp);
+	//CHAR *pBuffer = NULL;
+	WCHAR strBuf[152] = { 0 };
+	ULONG inlen = irpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+	//new
 	PIRP newIrp = IoAllocateIrp(fltDevice->StackSize + 1, FALSE);
 	IO_STATUS_BLOCK io_block;
 	PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
@@ -301,30 +308,77 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 	{
 	case IOCTL_SET_FLAG:
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_SET_FLAG;
-		break;
 
+		IoSetCompletionRoutine(newIrp,
+			IoCtlCompletion,
+			NULL,
+			TRUE,
+			TRUE,
+			TRUE);
+		status = IoCallDriver(fltDevice, newIrp);
+		KdPrint(("call status: %x\n", status));
+
+		IoCompleteRequest(newIrp, IO_NO_INCREMENT);
+		break;
 	case IOCTL_CLEAR_FLAG:
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_CLEAR_FLAG;
+
+		IoSetCompletionRoutine(newIrp,
+			IoCtlCompletion,
+			NULL,
+			TRUE,
+			TRUE,
+			TRUE);
+		status = IoCallDriver(fltDevice, newIrp);
+		KdPrint(("call status: %x\n", status));
+
+		IoCompleteRequest(newIrp, IO_NO_INCREMENT);
 		break;
 	case IOCTL_FINDFLT_FLAG:
-		stack->Parameters.DeviceIoControl.InputBufferLength = irpSp->Parameters.DeviceIoControl.InputBufferLength;
-		stack->Parameters.DeviceIoControl.OutputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
-		newIrp->AssociatedIrp.SystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
-		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_FINDFLT_FLAG;
+		RtlCopyMemory(strBuf, pIrp->AssociatedIrp.SystemBuffer, inlen);
+		UNICODE_STRING str = { 0 };
+		UNICODE_STRING temp = RTL_CONSTANT_STRING(L"\\Device\\USBPDO-2");
+		str.Buffer = strBuf;
+		str.Length = str.MaximumLength = (USHORT)inlen-2;
+		KdPrint(("real len:%d\n", temp.Length));
+		//RtlInitUnicodeString(&str, pBuffer);
+		//KdPrint(("len:%d, buf:%wZ\n", inlen, &str));
+		status = IoGetDeviceObjectPointer(
+			&str,
+			FILE_ALL_ACCESS,
+			&objectiveFile,
+			&objectiveDev);
+		if(STATUS_SUCCESS != status)
+			KdPrint(("select result:%x\n", status));
+		else
+		{
+			stack->Parameters.DeviceIoControl.InputBufferLength = inlen - 2;
+			stack->Parameters.DeviceIoControl.OutputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
+			newIrp->AssociatedIrp.SystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
+			stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_FINDFLT_FLAG;
+			IoSetCompletionRoutine(newIrp,
+				IoCtlCompletion,
+				NULL,
+				TRUE,
+				TRUE,
+				TRUE);
+			status = IoCallDriver(objectiveDev, newIrp);
+			KdPrint(("Call PDO status: %x\n", status));
+			KdPrint(("Ret len: %d", newIrp->IoStatus.Information));
+
+			IoCompleteRequest(newIrp, IO_NO_INCREMENT);
+			ObDereferenceObject(objectiveFile);
+		}
+
+		//IoCompleteRequest(newIrp, IO_NO_INCREMENT);
+		//IoFreeIrp(newIrp);
+		//ExFreePool(pBuffer);
 		break;
 	default:
 		break;
 	}
-	IoSetCompletionRoutine(newIrp,
-		IoCtlCompletion,
-		NULL,
-		TRUE,
-		TRUE,
-		TRUE);
-	status = IoCallDriver(fltDevice, newIrp);
-	KdPrint(("call status: %x\n", status));
+	
 
-	IoCompleteRequest(newIrp, IO_NO_INCREMENT);
 	//free
 	//IoFreeIrp(newIrp);
 
