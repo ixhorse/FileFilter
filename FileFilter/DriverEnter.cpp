@@ -127,7 +127,7 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT DriverObject, IN PDEVICE_OBJECT pdo)
 			KeInitializeSpinLock(&pdx->ListLock);
 			InitializeListHead(&pdx->ListHead);
 
-			pdx->flag = FALSE;
+			pdx->flag &= 0x00;
 			pdx->DeviceObject = fido;
 			pdx->Pdo = pdo;
 			//将过滤驱动附加在底层驱动之上
@@ -377,7 +377,7 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 			{
 				UCHAR *pbuf;
 				ULONG len;
-				if (pdx->flag)
+				if (((pdx->flag) & 0x11) == 0x11)
 				{
 					pbuf = (UCHAR *)urb->UrbBulkOrInterruptTransfer.TransferBuffer;
 					len = urb->UrbBulkOrInterruptTransfer.TransferBufferLength;
@@ -478,7 +478,7 @@ NTSTATUS DispatchIoDeviceControl(
 
 	case IOCTL_SET_FLAG:
 		KdPrint(("Set flag.\n"));
-		pdx->flag = TRUE;
+		pdx->flag |= 0x10;
 
 		//irp
 		Irp->IoStatus.Information = 0;
@@ -488,7 +488,7 @@ NTSTATUS DispatchIoDeviceControl(
 
 	case IOCTL_CLEAR_FLAG:
 		KdPrint(("Clear flag.\n"));
-		pdx->flag = FALSE;
+		pdx->flag &= 0x01;
 
 		//回收链表内存
 		while (1) {
@@ -505,6 +505,25 @@ NTSTATUS DispatchIoDeviceControl(
 		Irp->IoStatus.Information = 0;
 		Irp->IoStatus.Status = STATUS_SUCCESS;
 		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		break;
+
+	case IOCTL_FINDFLT_FLAG:
+		KdPrint((DRIVERNAME " - find filter\n"));
+		pdx->flag |= 0x01;
+
+		if (outlen != sizeof(PDEVICE_OBJECT))
+		{
+			status = STATUS_INVALID_PARAMETER;
+			KdPrint((DRIVERNAME "- wrong out buffer length.\n"));
+			break;
+		}
+
+		ret_len = outlen;
+		RtlCopyMemory(pBuf, &fido, outlen);
+		Irp->IoStatus.Information = ret_len;
+		Irp->IoStatus.Status = status;
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+
 		break;
 
 	default:

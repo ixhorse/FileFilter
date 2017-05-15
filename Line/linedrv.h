@@ -50,6 +50,7 @@ typedef struct _DEVICE_EXTENSION {
 	PDEVICE_OBJECT pDevice;
 	UNICODE_STRING ustrDeviceName;	//设备名称
 	UNICODE_STRING ustrSymLinkName;	//符号链接名
+	PDEVICE_OBJECT filterDevice;
 
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
@@ -73,6 +74,8 @@ NTSTATUS HelloDDKClose(IN PDEVICE_OBJECT pDevObj,
 
 NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
 	IN PIRP Irp, IN PVOID Context);
+
+PIRP MyCreateIrp(PDEVICE_OBJECT lowerDev, PIO_STATUS_BLOCK pio_block);
 
 extern POBJECT_TYPE *IoDriverObjectType;
 

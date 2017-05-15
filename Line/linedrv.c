@@ -75,6 +75,7 @@ NTSTATUS CreateDevice(
 	pDevExt = (PDEVICE_EXTENSION)pDevObj->DeviceExtension;
 	pDevExt->pDevice = pDevObj;
 	pDevExt->ustrDeviceName = devName;
+	pDevExt->filterDevice = NULL;
 
 	//´´½¨·ûºÅÁ´½Ó
 	UNICODE_STRING symLinkName;
@@ -161,25 +162,15 @@ NTSTATUS HelloDDKRead(IN PDEVICE_OBJECT pDevObj,
 	PDEVICE_EXTENSION pDevExt = (PDEVICE_EXTENSION)
 		pDevObj->DeviceExtension;
 
-	ULONG ret_len;
+	ULONG ret_len = 0;
 
-	if (fltDriver != NULL)
+	//fltDevice = fltDevice->NextDevice;
+	if (pDevExt->filterDevice)
 	{
-		fltDevice = fltDriver->DeviceObject;
-	}
-	//if (fltDevice->NextDevice != NULL)
-	//{
-	//	fltDevice = fltDevice->NextDevice;
-	//}
-	fltDevice = fltDevice->NextDevice;
-	while (fltDevice)
-	{
-		PIRP newIrp = IoAllocateIrp(fltDevice->StackSize+1, FALSE);
+		PIRP newIrp = IoAllocateIrp(pDevExt->filterDevice->StackSize, FALSE);
 		IO_STATUS_BLOCK io_block;
 		PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
 		LIST_NODE *list_node = (LIST_NODE *)ExAllocatePoolWithTag(NonPagedPool, sizeof(LIST_NODE), MEM_TAG);
-		
-		ret_len = 0;
 
 		newIrp->UserIosb = &io_block;
 		newIrp->Tail.Overlay.Thread = PsGetCurrentThread();
@@ -196,24 +187,20 @@ NTSTATUS HelloDDKRead(IN PDEVICE_OBJECT pDevObj,
 			TRUE,
 			TRUE,
 			TRUE);
-		status = IoCallDriver(fltDevice, newIrp);
+		status = IoCallDriver(pDevExt->filterDevice, newIrp);
 
-		if (!NT_SUCCESS(status))
+		if (NT_SUCCESS(status))
 		{
-			KdPrint(("Call failed. %x\n", status));
-			ExFreePoolWithTag(list_node, MEM_TAG);
-			fltDevice = fltDevice->NextDevice;
-			continue;
+			ret_len = newIrp->IoStatus.Information;
+			RtlCopyMemory(pIrp->AssociatedIrp.SystemBuffer, list_node, sizeof(LIST_NODE));
+
+			IoCompleteRequest(newIrp, IO_NO_INCREMENT);
 		}
-		
-		ret_len = newIrp->IoStatus.Information;
-		RtlCopyMemory(pIrp->AssociatedIrp.SystemBuffer, list_node, sizeof(LIST_NODE));
 		//free
 		ExFreePoolWithTag(list_node, MEM_TAG);
 		//IoFreeIrp(newIrp);
 
 		//fltDevice = fltDevice->NextDevice;
-		break;
 	}
 	
 	pIrp->IoStatus.Information = ret_len;
@@ -272,7 +259,7 @@ NTSTATUS HelloDDKClose(IN PDEVICE_OBJECT pDevObj,
 NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
 	IN PIRP Irp, IN PVOID Context)
 {
-
+	//IoFreeIrp(Irp);
 	return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
@@ -286,14 +273,22 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 	NTSTATUS status;
 	PDEVICE_OBJECT objectiveDev = NULL;
 	PFILE_OBJECT objectiveFile = NULL;
+	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)pDevObj->DeviceExtension;
 
 	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(pIrp);
 	//CHAR *pBuffer = NULL;
 	WCHAR strBuf[152] = { 0 };
+	CHAR *pBuffer;
 	ULONG inlen = irpSp->Parameters.DeviceIoControl.InputBufferLength;
+	ULONG outlen = sizeof(PDEVICE_OBJECT);
+	ULONG ret_len = 0;
+
+	IO_STATUS_BLOCK io_block;
+	PIRP newIrp;
+	PIO_STACK_LOCATION stack;
 
 	//new
-	PIRP newIrp = IoAllocateIrp(fltDevice->StackSize + 1, FALSE);
+	/*PIRP newIrp = IoAllocateIrp(fltDevice->StackSize + 1, FALSE);
 	IO_STATUS_BLOCK io_block;
 	PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
 
@@ -302,11 +297,13 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 
 	stack->MajorFunction = IRP_MJ_DEVICE_CONTROL;
 	stack->MinorFunction = 0;
-	stack->Parameters.DeviceIoControl.OutputBufferLength = 0;
+	stack->Parameters.DeviceIoControl.OutputBufferLength = 0;*/
 
 	switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
 	{
 	case IOCTL_SET_FLAG:
+		newIrp = MyCreateIrp(pdx->filterDevice, &io_block);
+		stack = IoGetNextIrpStackLocation(newIrp);
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_SET_FLAG;
 
 		IoSetCompletionRoutine(newIrp,
@@ -315,12 +312,14 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 			TRUE,
 			TRUE,
 			TRUE);
-		status = IoCallDriver(fltDevice, newIrp);
+		status = IoCallDriver(pdx->filterDevice, newIrp);
 		KdPrint(("call status: %x\n", status));
 
 		IoCompleteRequest(newIrp, IO_NO_INCREMENT);
 		break;
 	case IOCTL_CLEAR_FLAG:
+		newIrp = MyCreateIrp(pdx->filterDevice, &io_block);
+		stack = IoGetNextIrpStackLocation(newIrp);
 		stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_CLEAR_FLAG;
 
 		IoSetCompletionRoutine(newIrp,
@@ -329,7 +328,7 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 			TRUE,
 			TRUE,
 			TRUE);
-		status = IoCallDriver(fltDevice, newIrp);
+		status = IoCallDriver(pdx->filterDevice, newIrp);
 		KdPrint(("call status: %x\n", status));
 
 		IoCompleteRequest(newIrp, IO_NO_INCREMENT);
@@ -340,7 +339,7 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 		UNICODE_STRING temp = RTL_CONSTANT_STRING(L"\\Device\\USBPDO-2");
 		str.Buffer = strBuf;
 		str.Length = str.MaximumLength = (USHORT)inlen-2;
-		KdPrint(("real len:%d\n", temp.Length));
+		//KdPrint(("real len:%d\n", temp.Length));
 		//RtlInitUnicodeString(&str, pBuffer);
 		//KdPrint(("len:%d, buf:%wZ\n", inlen, &str));
 		status = IoGetDeviceObjectPointer(
@@ -352,9 +351,13 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 			KdPrint(("select result:%x\n", status));
 		else
 		{
+			newIrp = MyCreateIrp(objectiveDev, &io_block);
+			stack = IoGetNextIrpStackLocation(newIrp);
 			stack->Parameters.DeviceIoControl.InputBufferLength = inlen - 2;
-			stack->Parameters.DeviceIoControl.OutputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
-			newIrp->AssociatedIrp.SystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
+			stack->Parameters.DeviceIoControl.OutputBufferLength = outlen;
+			pBuffer = (CHAR *)ExAllocatePoolWithTag(NonPagedPool, outlen, MEM_TAG);
+
+			newIrp->AssociatedIrp.SystemBuffer = pBuffer;
 			stack->Parameters.DeviceIoControl.IoControlCode = IOCTL_FINDFLT_FLAG;
 			IoSetCompletionRoutine(newIrp,
 				IoCtlCompletion,
@@ -363,8 +366,20 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 				TRUE,
 				TRUE);
 			status = IoCallDriver(objectiveDev, newIrp);
-			KdPrint(("Call PDO status: %x\n", status));
-			KdPrint(("Ret len: %d", newIrp->IoStatus.Information));
+			//KdPrint(("Call PDO status: %x\n", status));
+			KdPrint(("Ret len: %d %d %d\n", newIrp->IoStatus.Information, sizeof(PDEVICE_OBJECT), sizeof(PCHAR)));
+
+			if (newIrp->IoStatus.Information == sizeof(PDEVICE_OBJECT) &&
+				irpSp->Parameters.DeviceIoControl.OutputBufferLength == sizeof(int))
+			{
+				int temp = 1;
+
+				RtlCopyMemory(&pdx->filterDevice, newIrp->AssociatedIrp.SystemBuffer, 4);
+				RtlCopyMemory(pIrp->AssociatedIrp.SystemBuffer, &temp, sizeof(int));
+				ret_len = sizeof(int);
+			}
+
+			KdPrint(("Line: %x %x\n", pdx->filterDevice, fltDevice));
 
 			IoCompleteRequest(newIrp, IO_NO_INCREMENT);
 			ObDereferenceObject(objectiveFile);
@@ -382,8 +397,24 @@ NTSTATUS HelloDDKIoCtl(IN PDEVICE_OBJECT pDevObj,
 	//free
 	//IoFreeIrp(newIrp);
 
-	pIrp->IoStatus.Information = 0;
+	pIrp->IoStatus.Information = ret_len;
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
 	return STATUS_SUCCESS;
+}
+
+PIRP MyCreateIrp(PDEVICE_OBJECT lowerDev, PIO_STATUS_BLOCK pio_block)
+{
+	//new
+	PIRP newIrp = IoAllocateIrp(lowerDev->StackSize, FALSE);
+	PIO_STACK_LOCATION stack = IoGetNextIrpStackLocation(newIrp);
+
+	newIrp->UserIosb = pio_block;
+	newIrp->Tail.Overlay.Thread = PsGetCurrentThread();
+
+	stack->MajorFunction = IRP_MJ_DEVICE_CONTROL;
+	stack->MinorFunction = 0;
+	stack->Parameters.DeviceIoControl.OutputBufferLength = 0;
+
+	return newIrp;
 }
