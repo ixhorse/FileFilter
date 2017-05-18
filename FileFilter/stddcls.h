@@ -29,6 +29,8 @@ extern "C" {
 
 #include <usb.h>
 
+#include <usbdlib.h>
+
 
 
 #ifdef __cplusplus

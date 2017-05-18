@@ -316,12 +316,14 @@ NTSTATUS InternalCompletion(IN PDEVICE_OBJECT DeviceObject,
 #pragma LOCKEDCODE
 NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 {
-	NTSTATUS status;
-	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
-	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
-	PURB urb = (PURB) stack->Parameters.Others.Argument1;
-	ULONG i;
-	LIST_NODE *list_node;
+	NTSTATUS				status;
+	PDEVICE_EXTENSION		pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	PIO_STACK_LOCATION		stack = IoGetCurrentIrpStackLocation(Irp);
+	PURB					urb = (PURB)stack->Parameters.Others.Argument1;
+	ULONG					i;
+	LIST_NODE				*list_node;
+	PFILE_OBJECT			fileObject = NULL;
+	PUSBD_PIPE_INFORMATION	pipeInfo = NULL;
 
 	status = IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB
@@ -373,6 +375,8 @@ NTSTATUS DispatchInternalDeviceControl(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 		case URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER:
 			//0x9
 			//最低位为传输方向
+			//KdPrint(("intfc num: %d\n", urb->UrbSelectInterface.Interface.InterfaceNumber));
+
 			if ((urb->UrbBulkOrInterruptTransfer.TransferFlags) & 0x01)
 			{
 				UCHAR *pbuf;
@@ -438,14 +442,20 @@ NTSTATUS DispatchIoDeviceControl(
 	IN PIRP Irp
 )
 {
-	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
-	PDEVICE_EXTENSION pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
-	NTSTATUS status;
-	ULONG outlen = stack->Parameters.DeviceIoControl.OutputBufferLength;
-	ULONG node_len = sizeof(LIST_NODE);
-	ULONG ret_len = 0;
-	PVOID pBuf = Irp->AssociatedIrp.SystemBuffer;
-	LIST_NODE *list_node = NULL;
+	PIO_STACK_LOCATION				stack = IoGetCurrentIrpStackLocation(Irp);
+	PIO_STACK_LOCATION				nextStack;
+	PDEVICE_EXTENSION				pdx = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	NTSTATUS						status;
+	ULONG							outlen = stack->Parameters.DeviceIoControl.OutputBufferLength;
+	ULONG							inlen = stack->Parameters.DeviceIoControl.InputBufferLength;
+	ULONG							node_len = sizeof(LIST_NODE);
+	ULONG							ret_len = 0;
+	PVOID							pBuf = Irp->AssociatedIrp.SystemBuffer;
+	LIST_NODE						*list_node = NULL;
+	PUSBD_INTERFACE_INFORMATION		Interface = NULL;
+	PURB							urb = NULL;
+	PIRP							newIrp = NULL;
+	IO_STATUS_BLOCK					io_block;
 
 	IoAcquireRemoveLock(&pdx->RemoveLock, Irp);
 	
@@ -453,14 +463,14 @@ NTSTATUS DispatchIoDeviceControl(
 	switch (stack->Parameters.DeviceIoControl.IoControlCode)
 	{
 	case IOCTL_READ_LIST:
-		list_node = (LIST_NODE *)ExInterlockedRemoveHeadList(&pdx->ListHead, &pdx->ListLock);
-
 		if (outlen < node_len)
 		{
 			KdPrint(("len wrong.\n"));
 			status = STATUS_INVALID_PARAMETER;
 			break;
 		}
+
+		list_node = (LIST_NODE *)ExInterlockedRemoveHeadList(&pdx->ListHead, &pdx->ListLock);
 		if (list_node != NULL)
 		{
 			RtlCopyMemory(pBuf, list_node, node_len);
@@ -507,7 +517,7 @@ NTSTATUS DispatchIoDeviceControl(
 		IoCompleteRequest(Irp, IO_NO_INCREMENT);
 		break;
 
-	case IOCTL_FINDFLT_FLAG:
+	case IOCTL_FIND_FILTER:
 		KdPrint((DRIVERNAME " - find filter\n"));
 		pdx->flag |= 0x01;
 
@@ -526,6 +536,55 @@ NTSTATUS DispatchIoDeviceControl(
 
 		break;
 
+	case IOCTL_SEND_DATA:
+		KdPrint((DRIVERNAME " - send data\n"));
+		KdPrint((DRIVERNAME " - len:%d data:%s\n", inlen, pBuf));
+
+		Interface = pdx->Interface;
+		if (Interface)
+		{
+			KdPrint((DRIVERNAME " - %#x\n", Interface->NumberOfPipes));
+			KdPrint((DRIVERNAME " - %#x\n", pdx->pipeContext.InterruptPipe));
+		}
+
+		urb = (PURB)ExAllocatePool(NonPagedPool,
+			sizeof(struct _URB_BULK_OR_INTERRUPT_TRANSFER));
+
+		if (urb) {
+			UsbBuildInterruptOrBulkTransferRequest(
+				urb,
+				sizeof(struct _URB_BULK_OR_INTERRUPT_TRANSFER),
+				pdx->pipeContext.InterruptPipe,
+				pBuf,
+				NULL,
+				inlen,
+				USBD_TRANSFER_DIRECTION_OUT | USBD_SHORT_TRANSFER_OK,
+				NULL);
+
+			/*newIrp = IoAllocateIrp(pdx->LowerDeviceObject->StackSize, FALSE);
+			nextStack = IoGetNextIrpStackLocation(newIrp);
+
+			newIrp->UserIosb = &io_block;
+			newIrp->Tail.Overlay.Thread = PsGetCurrentThread();
+
+			nextStack->MajorFunction = IRP_MJ_INTERNAL_DEVICE_CONTROL;
+			nextStack->Parameters.Others.Argument1 = (PVOID)urb;
+			nextStack->Parameters.DeviceIoControl.IoControlCode = IOCTL_INTERNAL_USB_SUBMIT_URB;*/
+
+			status = CallUSBD(fido, urb);
+
+			if (!NT_SUCCESS(status))
+			{
+				KdPrint((DRIVERNAME " - send call fail %x.\n", status));
+			}
+		}
+
+		//irp
+		Irp->IoStatus.Information = 0;
+		Irp->IoStatus.Status = STATUS_SUCCESS;
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		break;
+
 	default:
 		IoSkipCurrentIrpStackLocation(Irp);
 		status = IoCallDriver(pdx->LowerDeviceObject, Irp);
@@ -535,6 +594,12 @@ NTSTATUS DispatchIoDeviceControl(
 	IoReleaseRemoveLock(&pdx->RemoveLock, Irp);
 
 	return status;
+}
+
+NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp, IN PVOID Context)
+{
+	return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
 
@@ -792,6 +857,10 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP Irp)
 							// FILE_REMOVABLE_MEDIA
 	if (fcn == IRP_MN_START_DEVICE)
 	{						// device start
+
+		pdx->Interface = NULL;
+		GetConfiguration(fido);
+
 		IoCopyCurrentIrpStackLocationToNext(Irp);
 		IoSetCompletionRoutine(Irp, (PIO_COMPLETION_ROUTINE)StartDeviceCompletionRoutine,
 			(PVOID)pdx, TRUE, TRUE, TRUE);
@@ -893,4 +962,351 @@ LIST_NODE *mallocStrNode()
 	LIST_NODE *ret = (LIST_NODE *)ExAllocatePoolWithTag(
 		NonPagedPool, sizeof(LIST_NODE), MEM_TAG);
 	return ret;
+}
+
+NTSTATUS
+CallUSBD(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PURB           Urb
+)
+{
+	PIRP               irp;
+	KEVENT             event;
+	NTSTATUS           ntStatus;
+	IO_STATUS_BLOCK    ioStatus;
+	PIO_STACK_LOCATION nextStack;
+	PDEVICE_EXTENSION  deviceExtension;
+
+	//
+	// initialize the variables
+	//
+
+	irp = NULL;
+	deviceExtension = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
+
+	KeInitializeEvent(&event, NotificationEvent, FALSE);
+
+	irp = IoBuildDeviceIoControlRequest(IOCTL_INTERNAL_USB_SUBMIT_URB,
+		deviceExtension->LowerDeviceObject,
+		NULL,
+		0,
+		NULL,
+		0,
+		TRUE,
+		&event,
+		&ioStatus);
+
+	if (!irp) {
+
+		KdPrint(("IoBuildDeviceIoControlRequest failed\n"));
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+
+	nextStack = IoGetNextIrpStackLocation(irp);
+	nextStack->Parameters.Others.Argument1 = Urb;
+
+	ntStatus = IoCallDriver(deviceExtension->LowerDeviceObject, irp);
+
+	if (ntStatus == STATUS_PENDING) {
+
+		KeWaitForSingleObject(&event,
+			Executive,
+			KernelMode,
+			FALSE,
+			NULL);
+
+		ntStatus = ioStatus.Status;
+	}
+
+	return ntStatus;
+}
+
+
+NTSTATUS
+GetConfiguration(
+	IN PDEVICE_OBJECT                DeviceObject
+)
+{
+	PDEVICE_EXTENSION				pdx = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
+	NTSTATUS						status;
+	PURB							pUrb;
+	USB_CONFIGURATION_DESCRIPTOR	ConfigDescriptor;
+	PUSB_CONFIGURATION_DESCRIPTOR	fullConfigDescriptor = NULL;
+
+	pUrb = (PURB)ExAllocatePool(NonPagedPool,
+		sizeof(struct _URB_CONTROL_DESCRIPTOR_REQUEST));
+	//deviceDescriptor = (PUSB_DEVICE_DESCRIPTOR)ExAllocatePool(NonPagedPool, sizeof(USB_DEVICE_DESCRIPTOR));
+	//ConfigDescriptor = (PUSB_CONFIGURATION_DESCRIPTOR)ExAllocatePool(NonPagedPool, sizeof(USB_CONFIGURATION_DESCRIPTOR));
+
+	UsbBuildGetDescriptorRequest(
+		pUrb,
+		(USHORT) sizeof(struct _URB_CONTROL_DESCRIPTOR_REQUEST),
+		USB_CONFIGURATION_DESCRIPTOR_TYPE,
+		0,
+		0,
+		&ConfigDescriptor,
+		NULL,
+		sizeof(USB_CONFIGURATION_DESCRIPTOR),
+		NULL);
+
+	/*IoSetCompletionRoutine(Irp,
+	IoCtlCompletion,
+	NULL,
+	TRUE,
+	TRUE,
+	TRUE);*/
+
+	status = CallUSBD(DeviceObject, pUrb);
+
+	if (!NT_SUCCESS(status))
+	{
+		KdPrint((DRIVERNAME " - call to get dscr fail.\n"));
+	}
+	else
+	{
+		KdPrint((DRIVERNAME " - total len:%d\n", ConfigDescriptor.wTotalLength));
+	}
+	if (ConfigDescriptor.wTotalLength == 0)
+	{
+		KdPrint((DRIVERNAME " - could not retrieve the configuration descriptor size"));
+		status = USBD_STATUS_INAVLID_CONFIGURATION_DESCRIPTOR;
+		//ExFreePool(deviceDescriptor);
+		goto Exit;
+	}
+
+	fullConfigDescriptor = (PUSB_CONFIGURATION_DESCRIPTOR)ExAllocatePoolWithTag(
+		NonPagedPool,
+		ConfigDescriptor.wTotalLength,
+		MEM_TAG);
+	RtlZeroMemory(fullConfigDescriptor, ConfigDescriptor.wTotalLength);
+
+	if (!fullConfigDescriptor)
+	{
+		status = STATUS_INSUFFICIENT_RESOURCES;
+		goto Exit;
+	}
+
+	UsbBuildGetDescriptorRequest(
+		pUrb,
+		(USHORT) sizeof(struct _URB_CONTROL_DESCRIPTOR_REQUEST),
+		USB_CONFIGURATION_DESCRIPTOR_TYPE,
+		0,
+		0,
+		fullConfigDescriptor,
+		NULL,
+		ConfigDescriptor.wTotalLength,
+		NULL);
+
+	status = CallUSBD(DeviceObject, pUrb);
+
+	if (fullConfigDescriptor->wTotalLength == 0 || !NT_SUCCESS(status))
+	{
+		KdPrint((DRIVERNAME " - status:%x len:%d.\n", status, fullConfigDescriptor->bNumInterfaces));
+		status = USBD_STATUS_INAVLID_CONFIGURATION_DESCRIPTOR;
+		goto Exit;
+	}
+	else
+	{
+		KdPrint((DRIVERNAME " - intfc num:%d\n", fullConfigDescriptor->bNumInterfaces));
+	}
+
+	SelectInterfaces(DeviceObject, fullConfigDescriptor);
+
+	//IoCompleteRequest(newIrp, IO_NO_INCREMENT);
+	//ExFreePool(deviceDescriptor);
+
+Exit:
+	if(fullConfigDescriptor)
+		ExFreePool(fullConfigDescriptor);
+	if(pUrb)
+		ExFreePool(pUrb);
+
+	return status;
+}
+
+
+
+NTSTATUS
+SelectInterfaces(
+	IN PDEVICE_OBJECT                DeviceObject,
+	IN PUSB_CONFIGURATION_DESCRIPTOR ConfigurationDescriptor
+)
+{
+	LONG                        numberOfInterfaces,
+		interfaceNumber,
+		interfaceIndex;
+	ULONG                       i;
+	PURB                        urb;
+	PUCHAR                      pInf;
+	NTSTATUS                    ntStatus;
+	PDEVICE_EXTENSION           deviceExtension;
+	PUSB_INTERFACE_DESCRIPTOR   interfaceDescriptor;
+	PUSBD_INTERFACE_LIST_ENTRY  interfaceList,
+		tmp;
+	PUSBD_INTERFACE_INFORMATION Interface;
+	PUCHAR						StartPosition;
+	USBD_PIPE_HANDLE			pipeHandle;
+
+	//
+	// initialize the variables
+	//
+
+	urb = NULL;
+	Interface = NULL;
+	interfaceDescriptor = NULL;
+	deviceExtension = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
+	numberOfInterfaces = ConfigurationDescriptor->bNumInterfaces;
+	interfaceIndex = interfaceNumber = 0;
+	StartPosition = (PUCHAR)ConfigurationDescriptor;
+
+	//
+	// Parse the configuration descriptor for the interface;
+	//
+
+	tmp = interfaceList = (PUSBD_INTERFACE_LIST_ENTRY)ExAllocatePool(
+		NonPagedPool,
+		sizeof(USBD_INTERFACE_LIST_ENTRY) * (numberOfInterfaces + 1));
+
+	if (!tmp) {
+
+		KdPrint((DRIVERNAME " - Failed to allocate mem for interfaceList\n"));
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+
+	RtlZeroMemory(tmp, sizeof(
+		USBD_INTERFACE_LIST_ENTRY) *
+		(numberOfInterfaces + 1));
+
+	for (interfaceIndex = 0;
+		interfaceIndex < numberOfInterfaces;
+		interfaceIndex++)
+	{
+		interfaceDescriptor = USBD_ParseConfigurationDescriptorEx(
+			ConfigurationDescriptor,
+			StartPosition, // StartPosition 
+			-1,            // InterfaceNumber
+			0,             // AlternateSetting
+			-1,            // InterfaceClass
+			-1,            // InterfaceSubClass
+			-1);           // InterfaceProtocol
+
+		if (!interfaceDescriptor)
+		{
+			KdPrint((DRIVERNAME " - parse fail.\n"));
+			ntStatus = STATUS_INSUFFICIENT_RESOURCES;
+			goto Exit;
+		}
+
+		// Set the interface entry
+		interfaceList[interfaceIndex].InterfaceDescriptor = interfaceDescriptor;
+		interfaceList[interfaceIndex].Interface = NULL;
+
+		// Move the position to the next interface descriptor
+		StartPosition = (PUCHAR)interfaceDescriptor + interfaceDescriptor->bLength;
+
+	}
+
+	interfaceList[interfaceIndex].InterfaceDescriptor = NULL;
+	interfaceList[interfaceIndex].Interface = NULL;
+
+	urb = USBD_CreateConfigurationRequestEx(ConfigurationDescriptor, tmp);
+
+	if (!urb)
+	{
+		KdPrint((DRIVERNAME " - build urb fail.\n"));
+		ntStatus = STATUS_INSUFFICIENT_RESOURCES;
+		goto Exit;
+	}
+
+	ntStatus = CallUSBD(DeviceObject, urb);
+
+	if (!NT_SUCCESS(ntStatus))
+	{
+		KdPrint((DRIVERNAME " - call fail.\n"));
+		goto Exit;
+	}
+
+	for (interfaceIndex = 0;
+		interfaceIndex < numberOfInterfaces;
+		interfaceIndex++)
+	{
+
+		//Interface = interfaceList[interfaceIndex].Interface;
+		Interface = &urb->UrbSelectConfiguration.Interface;
+		deviceExtension->Interface = (PUSBD_INTERFACE_INFORMATION)ExAllocatePool(NonPagedPool,
+			Interface->Length);
+
+		if (deviceExtension->Interface)
+		{
+			RtlCopyMemory(deviceExtension->Interface,
+				Interface,
+				Interface->Length);
+		}
+		else
+		{
+			ntStatus = STATUS_INSUFFICIENT_RESOURCES;
+			goto Exit;
+		}
+
+		KdPrint(("---------\n"));
+		KdPrint(("NumberOfPipes 0x%x\n",
+			Interface->NumberOfPipes));
+		KdPrint(("Length 0x%x\n",
+			Interface->Length));
+		KdPrint(("Alt Setting 0x%x\n",
+			Interface->AlternateSetting));
+		KdPrint(("Interface Number 0x%x\n",
+			Interface->InterfaceNumber));
+		KdPrint(("Class, subclass, protocol 0x%x 0x%x 0x%x\n",
+			Interface->Class,
+			Interface->SubClass,
+			Interface->Protocol));
+
+		for (i = 0; i<Interface->NumberOfPipes; i++) {
+
+			KdPrint(("---------\n"));
+			KdPrint(("PipeType 0x%x\n",
+				Interface->Pipes[i].PipeType));
+			KdPrint(("EndpointAddress 0x%x\n",
+				Interface->Pipes[i].EndpointAddress));
+			KdPrint(("MaxPacketSize 0x%x\n",
+				Interface->Pipes[i].MaximumPacketSize));
+			KdPrint(("Interval 0x%x\n",
+				Interface->Pipes[i].Interval));
+			KdPrint(("Handle 0x%x\n",
+				Interface->Pipes[i].PipeHandle));
+			KdPrint(("MaximumTransferSize 0x%x\n",
+				Interface->Pipes[i].MaximumTransferSize));
+
+			pipeHandle = Interface->Pipes[i].PipeHandle;
+			if (Interface->Pipes[i].PipeType == UsbdPipeTypeInterrupt)
+			{
+				deviceExtension->pipeContext.InterruptPipe = pipeHandle;
+			}
+			if (Interface->Pipes[i].PipeType == UsbdPipeTypeBulk && USB_ENDPOINT_DIRECTION_IN(Interface->Pipes[i].EndpointAddress))
+			{
+				deviceExtension->pipeContext.BulkInPipe = pipeHandle;
+			}
+			if (Interface->Pipes[i].PipeType == UsbdPipeTypeBulk && USB_ENDPOINT_DIRECTION_OUT(Interface->Pipes[i].EndpointAddress))
+			{
+				deviceExtension->pipeContext.BulkOutPipe = pipeHandle;
+			}
+		}
+		break;
+	}
+
+
+Exit:
+	if (interfaceList)
+	{
+		ExFreePool(interfaceList);
+		interfaceList = NULL;
+	}
+
+	if (urb)
+	{
+		ExFreePool(urb);
+	}
+
+	return ntStatus;
 }

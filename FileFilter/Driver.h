@@ -36,23 +36,36 @@ typedef struct {
 } LIST_NODE;
 
 
+typedef struct _PIPE_CONTEXT {
+
+	USBD_PIPE_HANDLE InterruptPipe;
+
+	USBD_PIPE_HANDLE BulkInPipe;
+
+	USBD_PIPE_HANDLE BulkOutPipe;
+} PipeContext;
+
 typedef struct tagDEVICE_EXTENSION {
 
-	PDEVICE_OBJECT DeviceObject;			// device object this extension belongs to
+	PDEVICE_OBJECT				DeviceObject;			// device object this extension belongs to
 
-	PDEVICE_OBJECT LowerDeviceObject;		// next lower driver in same stack
+	PDEVICE_OBJECT				LowerDeviceObject;		// next lower driver in same stack
 
-	PDEVICE_OBJECT Pdo;						// the PDO
+	PDEVICE_OBJECT				Pdo;						// the PDO
 
-	IO_REMOVE_LOCK RemoveLock;
+	IO_REMOVE_LOCK				RemoveLock;
 
-	LIST_ENTRY ListHead;
+	LIST_ENTRY					ListHead;
 
-	KSPIN_LOCK ListLock;
+	KSPIN_LOCK					ListLock;
 
-	KEVENT List_event;
+	KEVENT						List_event;
 
-	ULONG flag;
+	ULONG						flag;
+
+	PUSBD_INTERFACE_INFORMATION Interface;
+
+	PipeContext					pipeContext;
 
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
@@ -78,10 +91,17 @@ typedef struct tagDEVICE_EXTENSION {
 			METHOD_BUFFERED, \
 			FILE_ANY_ACCESS)
 
-#define IOCTL_FINDFLT_FLAG \
+#define IOCTL_FIND_FILTER \
 	CTL_CODE(\
 			FILE_DEVICE_UNKNOWN,\
 			0X825,\
+			METHOD_BUFFERED, \
+			FILE_ANY_ACCESS)
+
+#define IOCTL_SEND_DATA \
+	CTL_CODE(\
+			FILE_DEVICE_UNKNOWN,\
+			0X826,\
 			METHOD_BUFFERED, \
 			FILE_ANY_ACCESS)
 
@@ -97,6 +117,26 @@ VOID RemoveDevice(IN PDEVICE_OBJECT fdo);
 NTSTATUS CompleteRequest(IN PIRP Irp, IN NTSTATUS status, IN ULONG_PTR info);
 
 NTSTATUS DispatchForSCSI(IN PDEVICE_OBJECT fido, IN PIRP Irp);
+
+NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
+	IN PIRP Irp, IN PVOID Context);
+
+NTSTATUS
+CallUSBD(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PURB           Urb
+);
+
+NTSTATUS
+SelectInterfaces(
+	IN PDEVICE_OBJECT                DeviceObject,
+	IN PUSB_CONFIGURATION_DESCRIPTOR ConfigurationDescriptor
+);
+
+NTSTATUS
+GetConfiguration(
+	IN PDEVICE_OBJECT                DeviceObject
+);
 
 #endif // DRIVER_H
 
