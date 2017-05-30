@@ -45,6 +45,29 @@ typedef struct _PIPE_CONTEXT {
 	USBD_PIPE_HANDLE BulkOutPipe;
 } PipeContext;
 
+typedef enum _PIPE_TYPE {
+	Control,
+	Bulk,
+	Interrupt
+} PIPE_TYPE;
+
+typedef enum _DIRECTION {
+	In,
+	Out,
+	Inout
+} DIRECTION;
+
+typedef struct _PIPE_INFO {
+	UCHAR       EndpointAddress;
+	PIPE_TYPE   PipeType;
+	DIRECTION   Direction;
+	UCHAR       Class;
+	UCHAR       Subclass;
+	UCHAR       Protocol;
+	USHORT      MaximumPacketSize;
+	USBD_PIPE_HANDLE	PipeHandle;
+} PIPE_INFO, *PPIPE_INFO;
+
 typedef struct tagDEVICE_EXTENSION {
 
 	PDEVICE_OBJECT				DeviceObject;			// device object this extension belongs to
@@ -61,11 +84,15 @@ typedef struct tagDEVICE_EXTENSION {
 
 	KEVENT						List_event;
 
-	ULONG						flag;
+	BOOLEAN						flag;
 
 	PUSBD_INTERFACE_INFORMATION Interface;
 
-	PipeContext					pipeContext;
+	PUSBD_INTERFACE_INFORMATION *InterfaceList;
+
+	ULONG						interfaceNums;
+
+	USBD_PIPE_HANDLE			PipeHandle;
 
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
@@ -105,6 +132,13 @@ typedef struct tagDEVICE_EXTENSION {
 			METHOD_BUFFERED, \
 			FILE_ANY_ACCESS)
 
+#define IOCTL_SELECT_PIPE \
+	CTL_CODE(\
+			FILE_DEVICE_UNKNOWN,\
+			0X827,\
+			METHOD_BUFFERED, \
+			FILE_ANY_ACCESS)
+
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -130,13 +164,22 @@ CallUSBD(
 NTSTATUS
 SelectInterfaces(
 	IN PDEVICE_OBJECT                DeviceObject,
-	IN PUSB_CONFIGURATION_DESCRIPTOR ConfigurationDescriptor
+	IN PUSB_CONFIGURATION_DESCRIPTOR ConfigurationDescriptor,
+	OUT PPIPE_INFO					 *pipe_info,
+	OUT ULONG						 *pipeNums
 );
 
 NTSTATUS
 GetConfiguration(
-	IN PDEVICE_OBJECT                DeviceObject
+	IN PDEVICE_OBJECT                DeviceObject,
+	OUT PPIPE_INFO					 *pipe_info,
+	OUT ULONG						 *pipeNums
 );
 
+VOID RetrievePipeInfo(
+	IN PDEVICE_OBJECT		fido,
+	OUT PPIPE_INFO	    *pipe_info,
+	OUT ULONG			*pipeNums
+);
 #endif // DRIVER_H
 

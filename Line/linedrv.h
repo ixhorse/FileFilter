@@ -7,6 +7,14 @@
 
 #include <wdm.h>
 
+#include <usbioctl.h>
+
+#include <usb.h>
+
+#include <usbdlib.h>
+
+#define DRIVERNAME "Line"
+
 
 #define PAGEDCODE code_seg("PAGE")
 #define LOCKEDCODE code_seg()
@@ -51,6 +59,7 @@ typedef struct _DEVICE_EXTENSION {
 	UNICODE_STRING ustrDeviceName;	//设备名称
 	UNICODE_STRING ustrSymLinkName;	//符号链接名
 	PDEVICE_OBJECT filterDevice;
+	USBD_PIPE_HANDLE pipeHandle;
 
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
@@ -76,6 +85,23 @@ NTSTATUS IoCtlCompletion(IN PDEVICE_OBJECT DeviceObject,
 	IN PIRP Irp, IN PVOID Context);
 
 PIRP MyCreateIrp(PDEVICE_OBJECT lowerDev, PIO_STATUS_BLOCK pio_block);
+
+NTSTATUS
+CallUSBD(
+	IN PDEVICE_OBJECT DeviceObject,
+	IN PURB           Urb
+);
+
+NTSTATUS
+SelectInterfaces(
+	IN PDEVICE_OBJECT                DeviceObject,
+	IN PUSB_CONFIGURATION_DESCRIPTOR ConfigurationDescriptor
+);
+
+NTSTATUS
+GetConfiguration(
+	IN PDEVICE_OBJECT                DeviceObject
+);
 
 extern POBJECT_TYPE *IoDriverObjectType;
 
